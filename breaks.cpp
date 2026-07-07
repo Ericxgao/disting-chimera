@@ -119,6 +119,7 @@ enum
 	kParamStretch,
 	kParamGate,
 	kParamBlend,
+	kParamBlendMode,
 	kParamBreak,
 
 	kParamPitchAmount,
@@ -130,6 +131,7 @@ enum
 };
 
 static const char* const loopsStrings[] = { "1", "2" };
+static const char* const blendModeStrings[] = { "Chance", "Xfade" };
 static const char* const sliceCountStrings[] = { "4", "8", "16", "32" };
 static const char* const sliceModeStrings[] = { "Equal", "Transient" };
 static const char* const barsStrings[] = { "1", "2" };
@@ -183,6 +185,7 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Stretch", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Gate", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Blend", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Blend mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = blendModeStrings },
 	{ .name = "Break", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
 	{ .name = "Pitch amount", .min = 1, .max = 24, .def = 12, .unit = kNT_unitSemitones, .scaling = 0, .enumStrings = NULL },
@@ -194,7 +197,7 @@ static const _NT_parameter parameters[] = {
 static const uint8_t pageSample[] = { kParamLoops, kParamFolder, kParamSample, kParamFolderB, kParamSampleB, kParamSlices, kParamSliceMode, kParamBars };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
 static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
-static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamBlend, kParamBreak };
+static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamBlend, kParamBlendMode, kParamBreak };
 static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
 
@@ -346,7 +349,9 @@ struct _breakSlicer : public _NT_algorithm
 	float			gain, gainTarget;
 	float			pitchUpFactor, pitchDownFactor;
 
-	Voice			cur, fade;
+	Voice			cur, fade;		// primary layer (chance mode; loop A in xfade)
+	Voice			curB, fadeB;	// second layer, used only in xfade blend mode
+	float			xfA, xfB;		// smoothed crossfade amplitudes
 	Rng				rng;
 };
 
@@ -589,6 +594,10 @@ static void startLoad( _breakSlicer* pThis, int li )
 		pThis->cur.active = 0;
 	if ( pThis->fade.active && pThis->fade.loopIdx == li )
 		pThis->fade.active = 0;
+	if ( pThis->curB.active && pThis->curB.loopIdx == li )
+		pThis->curB.active = 0;
+	if ( pThis->fadeB.active && pThis->fadeB.loopIdx == li )
+		pThis->fadeB.active = 0;
 
 	L.numFrames = ( info.numFrames < pThis->capFrames ) ? info.numFrames : pThis->capFrames;
 	L.numHops = L.numFrames / kAnalysisHop;
@@ -662,6 +671,7 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	NT_setParameterGrayedOut( algIdx, kParamFolderB + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamSampleB + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamBlend + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamBlendMode + off, gray );
 }
 
 void	parameterChanged( _NT_algorithm* self, int p )
@@ -727,19 +737,37 @@ void	parameterChanged( _NT_algorithm* self, int p )
 // ---------------------------------------------------------------------------
 // triggering
 
-static void triggerSlice( _breakSlicer* pThis, int idx )
+// one per-event roll of all the effect dice, shared by both xfade layers
+struct FxRolls
+{
+	bool	rev, up, down, stut, stretch, gatefx;
+	int		stutterDiv;
+};
+
+static void rollFx( _breakSlicer* pThis, FxRolls& r )
 {
 	const int16_t* pv = pThis->v;
 
-	// choose the source loop: Blend = probability of drawing from loop B
-	Loop* lp = &pThis->loops[0];
-	if ( pv[ kParamLoops ] && pThis->loops[1].sliced )
-	{
-		if ( !pThis->loops[0].sliced )
-			lp = &pThis->loops[1];
-		else if ( ( pThis->rng.uniform() * 100.0f ) < pv[ kParamBlend ] )
-			lp = &pThis->loops[1];
-	}
+	// Break macro scales all probabilities: 50 = as set, 0 = all off, 100 = doubled.
+	float scale = pv[ kParamBreak ] / 50.0f;
+	r.rev     = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamReverse ] * scale;
+	r.up      = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchUp ] * scale;
+	r.down    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchDown ] * scale;
+	r.stut    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStutter ] * scale;
+	r.stretch = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStretch ] * scale;
+	r.gatefx  = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamGate ] * scale;
+
+	int dv = pv[ kParamStutterDiv ];
+	if ( dv >= 4 )
+		r.stutterDiv = 4 << ( pThis->rng.next() % 3 );	// random: 4, 8 or 16
+	else
+		r.stutterDiv = 2 << dv;							// 2, 4, 8, 16
+}
+
+static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop* lp, int idx, const FxRolls& rolls )
+{
+	const int16_t* pv = pThis->v;
+
 	if ( !lp->sliced )
 		return;
 
@@ -753,16 +781,14 @@ static void triggerSlice( _breakSlicer* pThis, int idx )
 		return;
 	uint32_t len = end - start;
 
-	pThis->lastSlice = idx;
-
 	// choke: current voice moves to the fade slot
-	if ( pThis->cur.active )
+	if ( voice.active )
 	{
-		pThis->fade = pThis->cur;
-		pThis->fade.envTarget = 0.0f;
+		fadeSlot = voice;
+		fadeSlot.envTarget = 0.0f;
 	}
 
-	Voice& v = pThis->cur;
+	Voice& v = voice;
 	memset( &v, 0, sizeof(Voice) );
 	v.active = 1;
 	v.sliceIdx = (int8_t)idx;
@@ -774,17 +800,14 @@ static void triggerSlice( _breakSlicer* pThis, int idx )
 	v.env = 0.0f;
 	v.envTarget = 1.0f;
 
-	// roll the effects (amen style: probability per event)
-	// Break macro scales all probabilities: 50 = as set, 0 = all off, 100 = doubled.
-	// Locked slices always play straight.
+	// locked slices always play straight
 	bool locked = ( lp->lockMask >> idx ) & 1;
-	float scale = locked ? 0.0f : pv[ kParamBreak ] / 50.0f;
-	bool rev     = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamReverse ] * scale;
-	bool up      = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchUp ] * scale;
-	bool down    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchDown ] * scale;
-	bool stut    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStutter ] * scale;
-	bool stretch = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStretch ] * scale;
-	bool gatefx  = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamGate ] * scale;
+	bool rev     = rolls.rev && !locked;
+	bool up      = rolls.up && !locked;
+	bool down    = rolls.down && !locked;
+	bool stut    = rolls.stut && !locked;
+	bool stretch = rolls.stretch && !locked;
+	bool gatefx  = rolls.gatefx && !locked;
 
 	float pitch = 1.0f;
 	if ( up && !down )
@@ -836,13 +859,7 @@ static void triggerSlice( _breakSlicer* pThis, int idx )
 	if ( stut )
 	{
 		v.stutter = 1;
-		int div;
-		int dv = pv[ kParamStutterDiv ];
-		if ( dv >= 4 )
-			div = 4 << ( pThis->rng.next() % 3 );		// random: 4, 8 or 16
-		else
-			div = 2 << dv;								// 2, 4, 8, 16
-		uint32_t sub = len / div;
+		uint32_t sub = len / rolls.stutterDiv;
 		if ( sub < 64 )
 			sub = 64;
 		v.loopLen = sub;
@@ -875,6 +892,38 @@ static void triggerSlice( _breakSlicer* pThis, int idx )
 	// gate fx: MPC-style tight chop to half length
 	if ( gatefx )
 		v.framesLeft *= 0.5f;
+}
+
+static void triggerSlice( _breakSlicer* pThis, int idx )
+{
+	const int16_t* pv = pThis->v;
+
+	FxRolls rolls;
+	rollFx( pThis, rolls );
+
+	bool twoLoops = pv[ kParamLoops ] && pThis->loops[1].sliced;
+
+	if ( twoLoops && pv[ kParamBlendMode ] )
+	{
+		// Xfade: both loops play the slice, amplitudes crossfaded by Blend
+		startVoice( pThis, pThis->cur, pThis->fade, &pThis->loops[0], idx, rolls );
+		startVoice( pThis, pThis->curB, pThis->fadeB, &pThis->loops[1], idx, rolls );
+	}
+	else
+	{
+		// Chance: Blend = probability of drawing the event from loop B
+		Loop* lp = &pThis->loops[0];
+		if ( twoLoops )
+		{
+			if ( !pThis->loops[0].sliced )
+				lp = &pThis->loops[1];
+			else if ( ( pThis->rng.uniform() * 100.0f ) < pv[ kParamBlend ] )
+				lp = &pThis->loops[1];
+		}
+		startVoice( pThis, pThis->cur, pThis->fade, lp, idx, rolls );
+	}
+
+	pThis->lastSlice = idx;
 }
 
 // pick the slice a Random input trigger should play
@@ -994,7 +1043,7 @@ static inline void readFrame( const float* buf, uint32_t numFrames, float pos, f
 	r = p[1] + fr * ( p[3] - p[1] );
 }
 
-static inline void renderVoice( Voice& v, float& outL, float& outR )
+static inline void renderVoice( Voice& v, float amp, float& outL, float& outR )
 {
 	if ( !v.active || v.bufFrames < 2 )
 		return;
@@ -1075,8 +1124,8 @@ static inline void renderVoice( Voice& v, float& outL, float& outR )
 		}
 	}
 
-	outL += l * v.env;
-	outR += r * v.env;
+	outL += l * v.env * amp;
+	outR += r * v.env * amp;
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,6 +1271,17 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	float gain = pThis->gain;
 	float gainTarget = pThis->gainTarget;
 
+	// crossfade amplitude targets (equal power in Xfade mode, unity otherwise)
+	float xfTargetA = 1.0f, xfTargetB = 1.0f;
+	if ( pv[ kParamLoops ] && pv[ kParamBlendMode ] )
+	{
+		float b = pv[ kParamBlend ] * ( 3.14159265f / 200.0f );	// 0..pi/2
+		xfTargetA = cosf( b );
+		xfTargetB = sinf( b );
+	}
+	float xfA = pThis->xfA;
+	float xfB = pThis->xfB;
+
 	for ( int i=0; i<numFrames; ++i )
 	{
 		if ( resetBus && risingEdge( resetBus[i], pThis->resetArmed ) )
@@ -1277,9 +1337,14 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 			pThis->ratchetHigh = high;
 		}
 
+		xfA += ( xfTargetA - xfA ) * 0.002f;
+		xfB += ( xfTargetB - xfB ) * 0.002f;
+
 		float l = 0.0f, r = 0.0f;
-		renderVoice( pThis->cur, l, r );
-		renderVoice( pThis->fade, l, r );
+		renderVoice( pThis->cur, pThis->cur.loopIdx ? xfB : xfA, l, r );
+		renderVoice( pThis->fade, pThis->fade.loopIdx ? xfB : xfA, l, r );
+		renderVoice( pThis->curB, xfB, l, r );
+		renderVoice( pThis->fadeB, xfB, l, r );
 
 		// crush: sample-hold decimation + bit quantisation
 		if ( pv[ kParamCrush ] )
@@ -1313,6 +1378,8 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	}
 
 	pThis->gain = gain;
+	pThis->xfA = xfA;
+	pThis->xfB = xfB;
 }
 
 // ---------------------------------------------------------------------------
@@ -1569,9 +1636,14 @@ static bool drawEditor( _breakSlicer* pThis )
 	}
 
 	// playhead (only when playing from the loop being edited)
+	Voice* pv = NULL;
 	if ( pThis->cur.active && pThis->cur.loopIdx == pThis->editLoop )
+		pv = &pThis->cur;
+	else if ( pThis->curB.active && pThis->curB.loopIdx == pThis->editLoop )
+		pv = &pThis->curB;
+	if ( pv )
 	{
-		float p = pThis->cur.stretch ? ( pThis->cur.grainStart + pThis->cur.dir * pThis->cur.grainPhase ) : pThis->cur.pos;
+		float p = pv->stretch ? ( pv->grainStart + pv->dir * pv->grainPhase ) : pv->pos;
 		if ( p >= (float)visStart && p < (float)( visStart + visFrames ) )
 		{
 			int x = (int)( ( p - visStart ) * 256.0f / visFrames );
@@ -1723,15 +1795,20 @@ static void drawStrip( _breakSlicer* pThis, int li, int top, int bottom )
 			NT_drawText( x+2, top+6, "L", 12, kNT_textLeft, kNT_textTiny );
 	}
 
-	// current slice highlight + playhead
+	// current slice highlight + playhead (cur covers chance mode; curB the xfade B layer)
+	Voice* v = NULL;
 	if ( pThis->cur.active && pThis->cur.loopIdx == li )
+		v = &pThis->cur;
+	else if ( pThis->curB.active && pThis->curB.loopIdx == li )
+		v = &pThis->curB;
+	if ( v )
 	{
-		int s = pThis->cur.sliceIdx;
+		int s = v->sliceIdx;
 		int x0 = (int)( (uint64_t)L.sliceStart[ s ] * 256 / total );
 		int x1 = (int)( (uint64_t)L.sliceStart[ s + 1 ] * 256 / total );
 		NT_drawShapeI( kNT_rectangle, x0, top, x1, top + 1, 15 );
 
-		float p = pThis->cur.stretch ? ( pThis->cur.grainStart + pThis->cur.dir * pThis->cur.grainPhase ) : pThis->cur.pos;
+		float p = v->stretch ? ( v->grainStart + v->dir * v->grainPhase ) : v->pos;
 		int x = (int)( p * 256.0f / total );
 		if ( x >= 0 && x < 256 )
 			NT_drawShapeI( kNT_line, x, top, x, bottom, 15 );
