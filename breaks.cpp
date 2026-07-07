@@ -85,18 +85,28 @@ enum
 	kParamTrigInput,
 	kParamRandomInput,
 	kParamClockInput,
+	kParamResetInput,
+	kParamRatchetInput,
+
 	kParamSync,
 	kParamClockDiv,
+	kParamStepMode,
+	kParamRandomMode,
+	kParamRatchetDiv,
+	kParamMidiChannel,
 
 	kParamReverse,
 	kParamPitchUp,
 	kParamPitchDown,
 	kParamStutter,
 	kParamStretch,
+	kParamGate,
+	kParamBreak,
 
 	kParamPitchAmount,
 	kParamStutterDiv,
 	kParamStretchAmount,
+	kParamCrush,
 
 	kNumParams,
 };
@@ -109,6 +119,14 @@ static const char* const clockDivStrings[] = { "Auto", "1/32", "1/16", "1/8", "1
 
 // quarter notes per clock tick, indexed by kParamClockDiv (entry 0 unused: Auto)
 static const float clockDivQuarters[] = { 1.0f, 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
+
+static const char* const stepModeStrings[] = { "Forward", "Reverse", "PingPong", "Walk", "Shuffle" };
+static const char* const randomModeStrings[] = { "Free", "Beat" };
+static const char* const ratchetDivStrings[] = { "1/1", "1/2", "1/3", "1/4", "1/8" };
+static const float ratchetDivValues[] = { 1.0f, 2.0f, 3.0f, 4.0f, 8.0f };
+static const char* const midiChannelStrings[] = {
+	"Omni", "1", "2", "3", "4", "5", "6", "7", "8",
+	"9", "10", "11", "12", "13", "14", "15", "16" };
 
 static const _NT_parameter parameters[] = {
 	NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE( "Output L", 1, 13 )
@@ -124,29 +142,41 @@ static const _NT_parameter parameters[] = {
 	NT_PARAMETER_CV_INPUT( "Trig input", 0, 1 )
 	NT_PARAMETER_CV_INPUT( "Random input", 0, 0 )
 	NT_PARAMETER_CV_INPUT( "Clock input", 0, 0 )
+	NT_PARAMETER_CV_INPUT( "Reset input", 0, 0 )
+	NT_PARAMETER_CV_INPUT( "Ratchet input", 0, 0 )
+
 	{ .name = "Sync", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = syncModeStrings },
 	{ .name = "Clock div", .min = 0, .max = 6, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = clockDivStrings },
+	{ .name = "Step mode", .min = 0, .max = 4, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stepModeStrings },
+	{ .name = "Random mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = randomModeStrings },
+	{ .name = "Ratchet div", .min = 0, .max = 4, .def = 3, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = ratchetDivStrings },
+	{ .name = "MIDI channel", .min = 0, .max = 16, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = midiChannelStrings },
 
 	{ .name = "Reverse", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Pitch up", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Pitch down", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Stutter", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Stretch", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Gate", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Break", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
 	{ .name = "Pitch amount", .min = 1, .max = 24, .def = 12, .unit = kNT_unitSemitones, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Stutter div", .min = 0, .max = 4, .def = 4, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stutterDivStrings },
 	{ .name = "Stretch amount", .min = 110, .max = 400, .def = 200, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Crush", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
 static const uint8_t pageSample[] = { kParamFolder, kParamSample, kParamSlices, kParamSliceMode };
-static const uint8_t pageTriggers[] = { kParamSelectInput, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamSync, kParamClockDiv };
-static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch };
-static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount };
+static const uint8_t pageTriggers[] = { kParamSelectInput, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
+static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
+static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamBreak };
+static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
 
 static const _NT_parameterPage pages[] = {
 	{ .name = "Sample", .numParams = ARRAY_SIZE(pageSample), .params = pageSample },
 	{ .name = "Triggers", .numParams = ARRAY_SIZE(pageTriggers), .params = pageTriggers },
+	{ .name = "Sequence", .numParams = ARRAY_SIZE(pageSeq), .params = pageSeq },
 	{ .name = "FX", .numParams = ARRAY_SIZE(pageFx), .params = pageFx },
 	{ .name = "FX setup", .numParams = ARRAY_SIZE(pageFxSetup), .params = pageFxSetup },
 	{ .name = "Routing", .numParams = ARRAY_SIZE(pageRouting), .params = pageRouting },
@@ -231,8 +261,26 @@ struct _breakSlicer : public _NT_algorithm
 	float			waveMax;
 
 	// triggering
-	bool			trigArmed, randArmed, clockArmed;
+	bool			trigArmed, randArmed, clockArmed, resetArmed;
 	int				seqStep;
+	int				lastSlice;			// most recently triggered slice
+	int				ppDir;				// ping-pong direction
+	int				shufflePos;
+	int				permN;				// slice count the permutation was built for
+	uint8_t			perm[ kMaxSlices ];
+
+	// ratchet
+	bool			ratchetHigh;
+	float			ratchetTimer;		// output frames until next retrig
+
+	// slice locks (locked slice always plays straight, no fx rolls)
+	uint32_t		lockMask;
+
+	// crush (SP-1200 style decimator)
+	float			crushQ;				// quantisation levels
+	float			crushDiv;			// output frames per held sample
+	float			crushPhase;
+	float			crushL, crushR;
 
 	// clock measurement (for Sync)
 	float			clockPeriod;		// output frames per clock tick, 0 = unknown
@@ -318,8 +366,8 @@ static void computeSlices( _breakSlicer* pThis )
 
 	if ( pThis->selPoint >= pThis->numSlices )
 		pThis->selPoint = pThis->numSlices - 1;
-	if ( pThis->selPoint < 1 )
-		pThis->selPoint = 1;
+	if ( pThis->selPoint < 0 )
+		pThis->selPoint = 0;
 }
 
 // apply slice points restored from a preset, once the sample is loaded
@@ -414,7 +462,8 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 	alg->gain = alg->gainTarget = 1.0f;
 	alg->pitchUpFactor = 2.0f;
 	alg->pitchDownFactor = 0.5f;
-	alg->trigArmed = alg->randArmed = alg->clockArmed = true;
+	alg->trigArmed = alg->randArmed = alg->clockArmed = alg->resetArmed = true;
+	alg->ppDir = 1;
 	alg->rng.seed( 0xBEA7BEA7u );
 
 	return alg;
@@ -564,6 +613,13 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		pThis->pitchDownFactor = 1.0f / pThis->pitchUpFactor;
 	}
 		break;
+	case kParamCrush:
+	{
+		float c = (float)pThis->v[ kParamCrush ];
+		pThis->crushQ = exp2f( 16.0f - c * 0.08f );		// 16 -> 8 bits
+		pThis->crushDiv = 1.0f + c * 0.05f;				// 48k -> ~8kHz
+	}
+		break;
 	}
 }
 
@@ -601,13 +657,20 @@ static void triggerSlice( _breakSlicer* pThis, int idx )
 	v.env = 0.0f;
 	v.envTarget = 1.0f;
 
+	pThis->lastSlice = idx;
+
 	// roll the effects (amen style: probability per event)
+	// Break macro scales all probabilities: 50 = as set, 0 = all off, 100 = doubled.
+	// Locked slices always play straight.
 	const int16_t* pv = pThis->v;
-	bool rev     = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamReverse ];
-	bool up      = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchUp ];
-	bool down    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchDown ];
-	bool stut    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStutter ];
-	bool stretch = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStretch ];
+	bool locked = ( pThis->lockMask >> idx ) & 1;
+	float scale = locked ? 0.0f : pv[ kParamBreak ] / 50.0f;
+	bool rev     = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamReverse ] * scale;
+	bool up      = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchUp ] * scale;
+	bool down    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchDown ] * scale;
+	bool stut    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStutter ] * scale;
+	bool stretch = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStretch ] * scale;
+	bool gatefx  = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamGate ] * scale;
 
 	float pitch = 1.0f;
 	if ( up && !down )
@@ -694,6 +757,88 @@ static void triggerSlice( _breakSlicer* pThis, int idx )
 			v.framesLeft = ( len / v.rate ) * stretchFactor;
 		}
 	}
+
+	// gate fx: MPC-style tight chop to half length
+	if ( gatefx )
+		v.framesLeft *= 0.5f;
+}
+
+// pick the slice a Random input trigger should play
+static int randomSlice( _breakSlicer* pThis )
+{
+	int n = pThis->numSlices ? pThis->numSlices : 1;
+	if ( pThis->v[ kParamRandomMode ] == 0 )
+		return pThis->rng.next() % n;
+
+	// Beat mode: jump to the same position within another beat,
+	// so downbeats land on downbeats and the groove survives.
+	int spb = n / 4;			// slices per beat, assuming a 1-bar 4/4 loop
+	if ( spb < 1 )
+		spb = 1;
+	int groups = n / spb;
+	int phase = pThis->lastSlice % spb;
+	int idx = ( pThis->rng.next() % groups ) * spb + phase;
+	return ( idx < n ) ? idx : pThis->lastSlice;
+}
+
+// advance the clock-follow sequence, returning the slice to play
+static int nextStep( _breakSlicer* pThis )
+{
+	int n = pThis->numSlices ? pThis->numSlices : 1;
+	int idx;
+
+	switch ( pThis->v[ kParamStepMode ] )
+	{
+	default:
+	case 0:		// forward
+		idx = pThis->seqStep % n;
+		pThis->seqStep = ( idx + 1 ) % n;
+		break;
+	case 1:		// reverse
+		idx = pThis->seqStep % n;
+		pThis->seqStep = ( idx + n - 1 ) % n;
+		break;
+	case 2:		// ping-pong
+	{
+		idx = pThis->seqStep % n;
+		int ns = idx + pThis->ppDir;
+		if ( ns >= n )
+		{
+			pThis->ppDir = -1;
+			ns = ( n >= 2 ) ? n - 2 : 0;
+		}
+		else if ( ns < 0 )
+		{
+			pThis->ppDir = 1;
+			ns = ( n >= 2 ) ? 1 : 0;
+		}
+		pThis->seqStep = ns;
+	}
+		break;
+	case 3:		// drunk walk
+		idx = pThis->seqStep % n;
+		pThis->seqStep = ( idx + ( ( pThis->rng.next() & 1 ) ? 1 : n - 1 ) ) % n;
+		break;
+	case 4:		// shuffle: random permutation, regenerated each full cycle
+		if ( pThis->permN != n || pThis->shufflePos >= n )
+		{
+			for ( int i=0; i<n; ++i )
+				pThis->perm[i] = i;
+			for ( int i=n-1; i>0; --i )
+			{
+				int j = pThis->rng.next() % ( i + 1 );
+				uint8_t t = pThis->perm[i];
+				pThis->perm[i] = pThis->perm[j];
+				pThis->perm[j] = t;
+			}
+			pThis->permN = n;
+			pThis->shufflePos = 0;
+		}
+		idx = pThis->perm[ pThis->shufflePos++ ];
+		break;
+	}
+
+	return idx;
 }
 
 // ---------------------------------------------------------------------------
@@ -906,12 +1051,21 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	const float* trigBus = pv[ kParamTrigInput ] ? busFrames + ( pv[ kParamTrigInput ] - 1 ) * numFrames : NULL;
 	const float* randBus = pv[ kParamRandomInput ] ? busFrames + ( pv[ kParamRandomInput ] - 1 ) * numFrames : NULL;
 	const float* clockBus = pv[ kParamClockInput ] ? busFrames + ( pv[ kParamClockInput ] - 1 ) * numFrames : NULL;
+	const float* resetBus = pv[ kParamResetInput ] ? busFrames + ( pv[ kParamResetInput ] - 1 ) * numFrames : NULL;
+	const float* ratchetBus = pv[ kParamRatchetInput ] ? busFrames + ( pv[ kParamRatchetInput ] - 1 ) * numFrames : NULL;
 
 	float gain = pThis->gain;
 	float gainTarget = pThis->gainTarget;
 
 	for ( int i=0; i<numFrames; ++i )
 	{
+		if ( resetBus && risingEdge( resetBus[i], pThis->resetArmed ) )
+		{
+			pThis->seqStep = 0;
+			pThis->ppDir = 1;
+			pThis->shufflePos = 0;
+			pThis->permN = 0;		// force a fresh shuffle
+		}
 		if ( trigBus && risingEdge( trigBus[i], pThis->trigArmed ) )
 		{
 			float cv = selBus ? selBus[i] : 0.0f;
@@ -919,7 +1073,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 			triggerSlice( pThis, idx );
 		}
 		if ( randBus && risingEdge( randBus[i], pThis->randArmed ) )
-			triggerSlice( pThis, pThis->rng.next() % ( pThis->numSlices ? pThis->numSlices : 1 ) );
+			triggerSlice( pThis, randomSlice( pThis ) );
 		pThis->framesSinceClock++;
 		if ( clockBus && risingEdge( clockBus[i], pThis->clockArmed ) )
 		{
@@ -929,9 +1083,33 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 			if ( elapsed >= NT_globals.sampleRate / 20 && elapsed <= NT_globals.sampleRate * 4 )
 				pThis->clockPeriod = (float)elapsed;
 
-			triggerSlice( pThis, pThis->seqStep );
-			if ( pThis->numSlices )
-				pThis->seqStep = ( pThis->seqStep + 1 ) % pThis->numSlices;
+			triggerSlice( pThis, nextStep( pThis ) );
+		}
+		if ( ratchetBus )
+		{
+			// gate high: retrig the current slice at a clock subdivision
+			bool high = ratchetBus[i] >= kTrigHi;
+			if ( high )
+			{
+				float interval = ( pThis->clockPeriod > 0.0f )
+					? pThis->clockPeriod / ratchetDivValues[ pv[ kParamRatchetDiv ] ]
+					: NT_globals.sampleRate / 8.0f;
+				if ( !pThis->ratchetHigh )
+				{
+					triggerSlice( pThis, pThis->lastSlice );
+					pThis->ratchetTimer = interval;
+				}
+				else
+				{
+					pThis->ratchetTimer -= 1.0f;
+					if ( pThis->ratchetTimer <= 0.0f )
+					{
+						triggerSlice( pThis, pThis->lastSlice );
+						pThis->ratchetTimer += interval;
+					}
+				}
+			}
+			pThis->ratchetHigh = high;
 		}
 
 		float l = 0.0f, r = 0.0f;
@@ -939,6 +1117,21 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		{
 			renderVoice( pThis, pThis->cur, l, r );
 			renderVoice( pThis, pThis->fade, l, r );
+		}
+
+		// crush: sample-hold decimation + bit quantisation
+		if ( pv[ kParamCrush ] )
+		{
+			pThis->crushPhase += 1.0f;
+			if ( pThis->crushPhase >= pThis->crushDiv )
+			{
+				pThis->crushPhase -= pThis->crushDiv;
+				float q = pThis->crushQ;
+				pThis->crushL = (int32_t)( l * q ) / q;
+				pThis->crushR = (int32_t)( r * q ) / q;
+			}
+			l = pThis->crushL;
+			r = pThis->crushR;
 		}
 
 		gain += ( gainTarget - gain ) * 0.002f;
@@ -958,6 +1151,24 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	}
 
 	pThis->gain = gain;
+}
+
+// ---------------------------------------------------------------------------
+// MIDI: notes from 36 (C1) upwards trigger slices directly
+
+void	midiMessage( _NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byte2 )
+{
+	_breakSlicer* pThis = (_breakSlicer*)self;
+
+	if ( ( byte0 & 0xF0 ) != 0x90 || byte2 == 0 )
+		return;
+	int chParam = pThis->v[ kParamMidiChannel ];
+	if ( chParam && ( byte0 & 0x0F ) != chParam - 1 )
+		return;
+
+	int idx = (int)byte1 - 36;
+	if ( idx >= 0 && idx < pThis->numSlices )
+		triggerSlice( pThis, idx );
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,7 +1258,7 @@ uint32_t	hasCustomUi( _NT_algorithm* self )
 	_breakSlicer* pThis = (_breakSlicer*)self;
 	uint32_t mask = kNT_button3;
 	if ( pThis->editMode )
-		mask |= kNT_encoderL | kNT_encoderR | kNT_encoderButtonR | kNT_potR;
+		mask |= kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potR;
 	return mask;
 }
 
@@ -1070,18 +1281,22 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 
 	if ( data.encoders[0] )
 	{
+		// select point 0..N-1; point 0 is fixed but selectable for locking slice 0
 		int s = pThis->selPoint + data.encoders[0];
 		int last = pThis->numSlices - 1;
-		if ( s < 1 ) s = last;
-		if ( s > last ) s = 1;
+		if ( s < 0 ) s = last;
+		if ( s > last ) s = 0;
 		pThis->selPoint = s;
 	}
 
-	if ( data.encoders[1] )
+	if ( data.encoders[1] && pThis->selPoint >= 1 )
 		nudgeSelected( pThis, data.encoders[1] );
 
-	if ( pressed & kNT_encoderButtonR )
+	if ( pressed & kNT_encoderButtonR && pThis->selPoint >= 1 )
 		snapSelected( pThis );
+
+	if ( pressed & kNT_encoderButtonL )
+		pThis->lockMask ^= 1u << pThis->selPoint;	// lock slice starting at this point
 
 	if ( data.controls & kNT_potR )
 		pThis->zoomPot = data.pots[2];
@@ -1146,8 +1361,8 @@ static bool drawEditor( _breakSlicer* pThis )
 		NT_drawShapeI( kNT_line, x, mid - h, x, mid + h, 4 );
 	}
 
-	// slice points in view
-	for ( int s=1; s<pThis->numSlices; ++s )
+	// slice points in view (point 0 included: selectable for locking slice 0)
+	for ( int s=0; s<pThis->numSlices; ++s )
 	{
 		uint32_t pt = pThis->sliceStart[ s ];
 		if ( pt < visStart || pt >= visStart + visFrames )
@@ -1157,6 +1372,8 @@ static bool drawEditor( _breakSlicer* pThis )
 		NT_drawShapeI( kNT_line, x, top, x, bottom, sel ? 15 : 8 );
 		if ( sel )
 			NT_drawShapeI( kNT_rectangle, x-2, top, x+2, top+2, 15 );
+		if ( ( pThis->lockMask >> s ) & 1 )
+			NT_drawText( x+2, top+7, "L", 12, kNT_textLeft, kNT_textTiny );
 	}
 
 	// playhead
@@ -1197,14 +1414,21 @@ static bool drawEditor( _breakSlicer* pThis )
 void	serialise( _NT_algorithm* self, _NT_jsonStream& stream )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
-	if ( !pThis->manualSlices || !pThis->sliced )
-		return;
 
-	stream.addMemberName( "slicePoints" );
-	stream.openArray();
-	for ( int s=1; s<pThis->numSlices; ++s )
-		stream.addNumber( (int)pThis->sliceStart[ s ] );
-	stream.closeArray();
+	if ( pThis->lockMask )
+	{
+		stream.addMemberName( "locks" );
+		stream.addNumber( (int)pThis->lockMask );
+	}
+
+	if ( pThis->manualSlices && pThis->sliced )
+	{
+		stream.addMemberName( "slicePoints" );
+		stream.openArray();
+		for ( int s=1; s<pThis->numSlices; ++s )
+			stream.addNumber( (int)pThis->sliceStart[ s ] );
+		stream.closeArray();
+	}
 }
 
 bool	deserialise( _NT_algorithm* self, _NT_jsonParse& parse )
@@ -1217,7 +1441,14 @@ bool	deserialise( _NT_algorithm* self, _NT_jsonParse& parse )
 
 	for ( int j=0; j<members; ++j )
 	{
-		if ( parse.matchName( "slicePoints" ) )
+		if ( parse.matchName( "locks" ) )
+		{
+			int v;
+			if ( !parse.number( v ) )
+				return false;
+			pThis->lockMask = (uint32_t)v;
+		}
+		else if ( parse.matchName( "slicePoints" ) )
 		{
 			int n;
 			if ( !parse.numberOfArrayElements( n ) )
@@ -1272,12 +1503,15 @@ bool	draw( _NT_algorithm* self )
 		NT_drawShapeI( kNT_line, x, mid - h, x, mid + h, 6 );
 	}
 
-	// slice markers
+	// slice markers + lock flags
 	uint32_t total = pThis->numFrames;
-	for ( int s=1; s<pThis->numSlices; ++s )
+	for ( int s=0; s<pThis->numSlices; ++s )
 	{
 		int x = (int)( (uint64_t)pThis->sliceStart[ s ] * 256 / total );
-		NT_drawShapeI( kNT_line, x, top - 3, x, bottom, 10 );
+		if ( s )
+			NT_drawShapeI( kNT_line, x, top - 3, x, bottom, 10 );
+		if ( ( pThis->lockMask >> s ) & 1 )
+			NT_drawText( x+2, top+4, "L", 12, kNT_textLeft, kNT_textTiny );
 	}
 
 	// current slice highlight + playhead
@@ -1333,7 +1567,7 @@ static const _NT_factory factory =
 	.step = step,
 	.draw = draw,
 	.midiRealtime = NULL,
-	.midiMessage = NULL,
+	.midiMessage = midiMessage,
 	.tags = kNT_tagInstrument,
 	.hasCustomUi = hasCustomUi,
 	.customUi = customUi,
