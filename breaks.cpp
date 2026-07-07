@@ -118,6 +118,7 @@ enum
 	kParamStutter,
 	kParamStretch,
 	kParamGate,
+	kParamFilter,
 	kParamBlend,
 	kParamBlendMode,
 	kParamBreak,
@@ -126,6 +127,7 @@ enum
 	kParamStutterDiv,
 	kParamStretchAmount,
 	kParamCrush,
+	kParamDrive,
 
 	kNumParams,
 };
@@ -184,6 +186,7 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Stutter", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Stretch", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Gate", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Filter", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Blend", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Blend mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = blendModeStrings },
 	{ .name = "Break", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
@@ -192,13 +195,14 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Stutter div", .min = 0, .max = 4, .def = 4, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stutterDivStrings },
 	{ .name = "Stretch amount", .min = 110, .max = 400, .def = 200, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Crush", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Drive", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
 static const uint8_t pageSample[] = { kParamLoops, kParamFolder, kParamSample, kParamFolderB, kParamSampleB, kParamSlices, kParamSliceMode, kParamBars };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
 static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
-static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamBlend, kParamBlendMode, kParamBreak };
-static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush };
+static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamBlend, kParamBlendMode, kParamBreak };
+static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
 
 static const _NT_parameterPage pages[] = {
@@ -255,7 +259,15 @@ struct Voice
 	float		framesLeft;		// output frames until natural end
 	float		env;			// declick envelope
 	float		envTarget;
+
+	// per-event filter sweep (Chamberlin SVF)
+	uint8_t		fType;			// 0 none, 1 LP, 2 HP
+	float		fCoef;			// current frequency coefficient
+	float		fCoefStep;		// per-frame sweep
+	float		svLowL, svBandL, svLowR, svBandR;
 };
+
+static const float kFilterDamp = 0.5f;	// SVF damping (some resonance)
 
 // ---------------------------------------------------------------------------
 // per-loop state
@@ -334,6 +346,10 @@ struct _breakSlicer : public _NT_algorithm
 	float			crushDiv;			// output frames per held sample
 	float			crushPhase;
 	float			crushL, crushR;
+
+	// drive (soft-clip saturation)
+	float			drivePre;			// input gain into the shaper
+	float			driveMakeup;
 
 	// clock measurement (for Sync)
 	float			clockPeriod;		// output frames per clock tick, 0 = unknown
@@ -731,7 +747,23 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		pThis->crushDiv = 1.0f + c * 0.05f;				// 48k -> ~8kHz
 	}
 		break;
+	case kParamDrive:
+	{
+		float d = (float)pThis->v[ kParamDrive ];
+		pThis->drivePre = 1.0f + d * 0.15f;				// 1x .. 16x into the shaper
+		pThis->driveMakeup = 1.0f / sqrtf( pThis->drivePre );
 	}
+		break;
+	}
+}
+
+// cheap tanh-shaped soft clip (Pade approximation, hard limit past +/-3)
+static inline float softClip( float x )
+{
+	if ( x > 3.0f ) return 1.0f;
+	if ( x < -3.0f ) return -1.0f;
+	float x2 = x * x;
+	return x * ( 27.0f + x2 ) / ( 27.0f + 9.0f * x2 );
 }
 
 // ---------------------------------------------------------------------------
@@ -740,8 +772,10 @@ void	parameterChanged( _NT_algorithm* self, int p )
 // one per-event roll of all the effect dice, shared by both xfade layers
 struct FxRolls
 {
-	bool	rev, up, down, stut, stretch, gatefx;
+	bool	rev, up, down, stut, stretch, gatefx, filt;
 	int		stutterDiv;
+	int		filtType;			// 0 LP, 1 HP
+	float	filtC0, filtC1;		// SVF coefficient sweep endpoints
 };
 
 static void rollFx( _breakSlicer* pThis, FxRolls& r )
@@ -757,11 +791,24 @@ static void rollFx( _breakSlicer* pThis, FxRolls& r )
 	r.stretch = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStretch ] * scale;
 	r.gatefx  = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamGate ] * scale;
 
+	r.filt    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamFilter ] * scale;
+
 	int dv = pv[ kParamStutterDiv ];
 	if ( dv >= 4 )
 		r.stutterDiv = 4 << ( pThis->rng.next() % 3 );	// random: 4, 8 or 16
 	else
 		r.stutterDiv = 2 << dv;							// 2, 4, 8, 16
+
+	if ( r.filt )
+	{
+		// random LP or HP with a random log-spaced cutoff sweep, 200Hz..8kHz
+		r.filtType = pThis->rng.next() & 1;
+		float f0 = 200.0f * expf( pThis->rng.uniform() * 3.6889f );
+		float f1 = 200.0f * expf( pThis->rng.uniform() * 3.6889f );
+		float k = 6.2831853f / (float)NT_globals.sampleRate;
+		r.filtC0 = 2.0f * sinf( 0.5f * k * f0 );
+		r.filtC1 = 2.0f * sinf( 0.5f * k * f1 );
+	}
 }
 
 static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop* lp, int idx, const FxRolls& rolls )
@@ -892,6 +939,15 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 	// gate fx: MPC-style tight chop to half length
 	if ( gatefx )
 		v.framesLeft *= 0.5f;
+
+	// per-event filter sweep across the (final) slice duration
+	if ( rolls.filt && !locked )
+	{
+		v.fType = rolls.filtType + 1;
+		v.fCoef = rolls.filtC0;
+		float fl = ( v.framesLeft > 1.0f ) ? v.framesLeft : 1.0f;
+		v.fCoefStep = ( rolls.filtC1 - rolls.filtC0 ) / fl;
+	}
 }
 
 static void triggerSlice( _breakSlicer* pThis, int idx )
@@ -1124,6 +1180,25 @@ static inline void renderVoice( Voice& v, float amp, float& outL, float& outR )
 		}
 	}
 
+	// per-event filter sweep
+	if ( v.fType )
+	{
+		float c = v.fCoef;
+		v.fCoef = c + v.fCoefStep;
+		if ( v.fCoef > 1.2f ) v.fCoef = 1.2f;
+		if ( v.fCoef < 0.005f ) v.fCoef = 0.005f;
+
+		v.svLowL += c * v.svBandL;
+		float hiL = l - v.svLowL - kFilterDamp * v.svBandL;
+		v.svBandL += c * hiL;
+		l = ( v.fType == 1 ) ? v.svLowL : hiL;
+
+		v.svLowR += c * v.svBandR;
+		float hiR = r - v.svLowR - kFilterDamp * v.svBandR;
+		v.svBandR += c * hiR;
+		r = ( v.fType == 1 ) ? v.svLowR : hiR;
+	}
+
 	outL += l * v.env * amp;
 	outR += r * v.env * amp;
 }
@@ -1345,6 +1420,13 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		renderVoice( pThis->fade, pThis->fade.loopIdx ? xfB : xfA, l, r );
 		renderVoice( pThis->curB, xfB, l, r );
 		renderVoice( pThis->fadeB, xfB, l, r );
+
+		// drive: soft-clip saturation
+		if ( pv[ kParamDrive ] )
+		{
+			l = softClip( l * pThis->drivePre ) * pThis->driveMakeup;
+			r = softClip( r * pThis->drivePre ) * pThis->driveMakeup;
+		}
 
 		// crush: sample-hold decimation + bit quantisation
 		if ( pv[ kParamCrush ] )
