@@ -742,9 +742,10 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		break;
 	case kParamCrush:
 	{
+		// calibrated so Crush = 50 is an SP-1200: 12 bits at 26.04kHz
 		float c = (float)pThis->v[ kParamCrush ];
-		pThis->crushQ = exp2f( 16.0f - c * 0.08f );		// 16 -> 8 bits
-		pThis->crushDiv = 1.0f + c * 0.05f;				// 48k -> ~8kHz
+		pThis->crushQ = exp2f( 16.0f - c * 0.08f );		// 16 -> 12 (at 50) -> 8 bits
+		pThis->crushDiv = exp2f( c * 0.017644f );		// 48k -> 26.04k (at 50) -> 14.1k
 	}
 		break;
 	case kParamDrive:
