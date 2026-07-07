@@ -46,6 +46,7 @@ enum
 {
 	kNumLoops		= 2,
 	kMaxSlices		= 32,
+	kEchoFrames		= 48000,	// serpent delay line, 1s stereo
 	kWaveBuckets	= 128,		// waveform display resolution
 	kAnalysisHop	= 128,		// frames per onset-envelope hop
 	kAnalysisChunk	= 8192,		// frames analysed per step() call
@@ -120,8 +121,10 @@ enum
 	kParamStretch,
 	kParamGate,
 	kParamFilter,
+	kParamSerpent,
 	kParamBlend,
 	kParamBlendMode,
+	kParamQuarrel,
 	kParamBreak,
 
 	kParamPitchAmount,
@@ -188,8 +191,10 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Stretch", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Gate", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Filter", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Serpent", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Blend", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Blend mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = blendModeStrings },
+	{ .name = "Quarrel", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Break", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
 	{ .name = "Pitch amount", .min = 1, .max = 24, .def = 12, .unit = kNT_unitSemitones, .scaling = 0, .enumStrings = NULL },
@@ -202,7 +207,7 @@ static const _NT_parameter parameters[] = {
 static const uint8_t pageSample[] = { kParamLoops, kParamFolder, kParamSample, kParamFolderB, kParamSampleB, kParamSlices, kParamSliceMode, kParamBars };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
 static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
-static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamBlend, kParamBlendMode, kParamBreak };
+static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak };
 static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
 
@@ -239,6 +244,7 @@ struct Voice
 	uint8_t		active;
 	uint8_t		stutter;
 	uint8_t		stretch;
+	uint8_t		serpent;		// send this voice into the echo tail
 	int8_t		sliceIdx;
 	uint8_t		loopIdx;
 
@@ -351,6 +357,18 @@ struct _breakSlicer : public _NT_algorithm
 	// drive (soft-clip saturation)
 	float			drivePre;			// input gain into the shaper
 	float			driveMakeup;
+
+	// serpent (dub delay tail)
+	float*			echo;				// DRAM: stereo interleaved ring buffer
+	uint32_t		echoPos;
+	float			echoTime;			// delay in frames, slewed
+	float			echoLpL, echoLpR;	// darkening filter in the feedback path
+
+	// tame (button 1 held: beast behaves)
+	bool			tamed;
+
+	// quarrel (auto random-walk on Blend)
+	float			quarrelWalk;		// wander offset, -50..+50
 
 	// clock measurement (for Sync)
 	float			clockPeriod;		// output frames per clock tick, 0 = unknown
@@ -481,7 +499,8 @@ void	calculateRequirements( _NT_algorithmRequirements& req, const int32_t* speci
 
 	req.numParameters = kNumParams;
 	req.sram = sizeof(_breakSlicer);
-	req.dram = kNumLoops * ( capFrames * 2 * sizeof(float) + 2 * numHops * sizeof(float) );
+	req.dram = kNumLoops * ( capFrames * 2 * sizeof(float) + 2 * numHops * sizeof(float) )
+		+ kEchoFrames * 2 * sizeof(float);
 	req.dtc = 0;
 	req.itc = 0;
 }
@@ -527,6 +546,9 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 		dram = L.hopPeak + maxHops;
 		L.srRatio = 1.0f;
 	}
+	alg->echo = dram;
+	memset( alg->echo, 0, kEchoFrames * 2 * sizeof(float) );
+	alg->echoTime = 18000.0f;	// 375ms until a clock teaches us better
 
 	memcpy( alg->params, parameters, sizeof parameters );
 	alg->parameters = alg->params;
@@ -689,6 +711,7 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	NT_setParameterGrayedOut( algIdx, kParamSampleB + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamBlend + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamBlendMode + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamQuarrel + off, gray );
 }
 
 void	parameterChanged( _NT_algorithm* self, int p )
@@ -774,7 +797,7 @@ static inline float softClip( float x )
 // one per-event roll of all the effect dice, shared by both xfade layers
 struct FxRolls
 {
-	bool	rev, up, down, stut, stretch, gatefx, filt;
+	bool	rev, up, down, stut, stretch, gatefx, filt, serp;
 	int		stutterDiv;
 	int		filtType;			// 0 LP, 1 HP
 	float	filtC0, filtC1;		// SVF coefficient sweep endpoints
@@ -785,7 +808,8 @@ static void rollFx( _breakSlicer* pThis, FxRolls& r )
 	const int16_t* pv = pThis->v;
 
 	// Break macro scales all probabilities: 50 = as set, 0 = all off, 100 = doubled.
-	float scale = pv[ kParamBreak ] / 50.0f;
+	// A held Tame button silences all the dice.
+	float scale = pThis->tamed ? 0.0f : pv[ kParamBreak ] / 50.0f;
 	r.rev     = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamReverse ] * scale;
 	r.up      = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchUp ] * scale;
 	r.down    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchDown ] * scale;
@@ -794,6 +818,7 @@ static void rollFx( _breakSlicer* pThis, FxRolls& r )
 	r.gatefx  = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamGate ] * scale;
 
 	r.filt    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamFilter ] * scale;
+	r.serp    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamSerpent ] * scale;
 
 	int dv = pv[ kParamStutterDiv ];
 	if ( dv >= 4 )
@@ -857,6 +882,7 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 	bool stut    = rolls.stut && !locked;
 	bool stretch = rolls.stretch && !locked;
 	bool gatefx  = rolls.gatefx && !locked;
+	v.serpent = ( rolls.serp && !locked ) ? 1 : 0;
 
 	float pitch = 1.0f;
 	if ( up && !down )
@@ -952,6 +978,15 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 	}
 }
 
+// Blend with the Quarrel wander applied (the heads fight over the fader)
+static float effectiveBlend( _breakSlicer* pThis )
+{
+	float b = pThis->v[ kParamBlend ] + pThis->quarrelWalk;
+	if ( b < 0.0f ) b = 0.0f;
+	if ( b > 100.0f ) b = 100.0f;
+	return b;
+}
+
 static void triggerSlice( _breakSlicer* pThis, int idx )
 {
 	const int16_t* pv = pThis->v;
@@ -975,7 +1010,7 @@ static void triggerSlice( _breakSlicer* pThis, int idx )
 		{
 			if ( !pThis->loops[0].sliced )
 				lp = &pThis->loops[1];
-			else if ( ( pThis->rng.uniform() * 100.0f ) < pv[ kParamBlend ] )
+			else if ( ( pThis->rng.uniform() * 100.0f ) < effectiveBlend( pThis ) )
 				lp = &pThis->loops[1];
 		}
 		startVoice( pThis, pThis->cur, pThis->fade, lp, idx, rolls );
@@ -1101,7 +1136,7 @@ static inline void readFrame( const float* buf, uint32_t numFrames, float pos, f
 	r = p[1] + fr * ( p[3] - p[1] );
 }
 
-static inline void renderVoice( Voice& v, float amp, float& outL, float& outR )
+static inline void renderVoice( Voice& v, float amp, float& outL, float& outR, float& sendL, float& sendR )
 {
 	if ( !v.active || v.bufFrames < 2 )
 		return;
@@ -1201,8 +1236,15 @@ static inline void renderVoice( Voice& v, float amp, float& outL, float& outR )
 		r = ( v.fType == 1 ) ? v.svLowR : hiR;
 	}
 
-	outL += l * v.env * amp;
-	outR += r * v.env * amp;
+	l *= v.env * amp;
+	r *= v.env * amp;
+	outL += l;
+	outR += r;
+	if ( v.serpent )
+	{
+		sendL += l;
+		sendR += r;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1348,16 +1390,34 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	float gain = pThis->gain;
 	float gainTarget = pThis->gainTarget;
 
+	// quarrel: the heads fight over the blend fader (random walk, leaks to centre)
+	if ( pv[ kParamQuarrel ] && pv[ kParamLoops ] )
+	{
+		float w = pThis->quarrelWalk;
+		w += ( pThis->rng.uniform() * 2.0f - 1.0f ) * pv[ kParamQuarrel ] * 0.06f;
+		w -= w * 0.005f;
+		if ( w < -50.0f ) w = -50.0f;
+		if ( w > 50.0f ) w = 50.0f;
+		pThis->quarrelWalk = w;
+	}
+	else
+		pThis->quarrelWalk = 0.0f;
+
 	// crossfade amplitude targets (equal power in Xfade mode, unity otherwise)
 	float xfTargetA = 1.0f, xfTargetB = 1.0f;
 	if ( pv[ kParamLoops ] && pv[ kParamBlendMode ] )
 	{
-		float b = pv[ kParamBlend ] * ( 3.14159265f / 200.0f );	// 0..pi/2
+		float b = effectiveBlend( pThis ) * ( 3.14159265f / 200.0f );	// 0..pi/2
 		xfTargetA = cosf( b );
 		xfTargetB = sinf( b );
 	}
 	float xfA = pThis->xfA;
 	float xfB = pThis->xfB;
+
+	// serpent delay time chases the clock (dotted-eighth feel: 3/4 of a tick)
+	float echoTarget = ( pThis->clockPeriod > 0.0f ) ? pThis->clockPeriod * 0.75f : 18000.0f;
+	if ( echoTarget < 480.0f ) echoTarget = 480.0f;
+	if ( echoTarget > (float)( kEchoFrames - 1000 ) ) echoTarget = (float)( kEchoFrames - 1000 );
 
 	for ( int i=0; i<numFrames; ++i )
 	{
@@ -1418,10 +1478,36 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		xfB += ( xfTargetB - xfB ) * 0.002f;
 
 		float l = 0.0f, r = 0.0f;
-		renderVoice( pThis->cur, pThis->cur.loopIdx ? xfB : xfA, l, r );
-		renderVoice( pThis->fade, pThis->fade.loopIdx ? xfB : xfA, l, r );
-		renderVoice( pThis->curB, xfB, l, r );
-		renderVoice( pThis->fadeB, xfB, l, r );
+		float sendL = 0.0f, sendR = 0.0f;
+		renderVoice( pThis->cur, pThis->cur.loopIdx ? xfB : xfA, l, r, sendL, sendR );
+		renderVoice( pThis->fade, pThis->fade.loopIdx ? xfB : xfA, l, r, sendL, sendR );
+		renderVoice( pThis->curB, xfB, l, r, sendL, sendR );
+		renderVoice( pThis->fadeB, xfB, l, r, sendL, sendR );
+
+		// serpent: dub delay tail (darkened feedback, clock-chasing time)
+		{
+			pThis->echoTime += ( echoTarget - pThis->echoTime ) * 0.0002f;
+			float rp = (float)pThis->echoPos - pThis->echoTime;
+			if ( rp < 0.0f )
+				rp += (float)kEchoFrames;
+			uint32_t i0 = (uint32_t)rp;
+			uint32_t i1 = ( i0 + 1 ) % kEchoFrames;
+			float fr = rp - i0;
+			float* e = pThis->echo;
+			float eL = e[ 2*i0 ] + fr * ( e[ 2*i1 ] - e[ 2*i0 ] );
+			float eR = e[ 2*i0+1 ] + fr * ( e[ 2*i1+1 ] - e[ 2*i0+1 ] );
+
+			// darken the repeats
+			pThis->echoLpL += ( eL - pThis->echoLpL ) * 0.35f;
+			pThis->echoLpR += ( eR - pThis->echoLpR ) * 0.35f;
+
+			e[ 2*pThis->echoPos ] = sendL + pThis->echoLpL * 0.5f;
+			e[ 2*pThis->echoPos+1 ] = sendR + pThis->echoLpR * 0.5f;
+			pThis->echoPos = ( pThis->echoPos + 1 ) % kEchoFrames;
+
+			l += eL;
+			r += eR;
+		}
 
 		// drive: soft-clip saturation
 		if ( pv[ kParamDrive ] )
@@ -1604,7 +1690,7 @@ static void snapZero( _breakSlicer* pThis, Loop& L )
 uint32_t	hasCustomUi( _NT_algorithm* self )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
-	uint32_t mask = kNT_button3;
+	uint32_t mask = kNT_button1 | kNT_button3;	// button 1 held = tame
 	if ( pThis->editMode )
 		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potR;
 	return mask;
@@ -1615,6 +1701,9 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 	_breakSlicer* pThis = (_breakSlicer*)self;
 
 	uint16_t pressed = data.controls & ~data.lastButtons;
+
+	// tame: while button 1 is held, the beast behaves (all fx suppressed)
+	pThis->tamed = ( data.controls & kNT_button1 ) != 0;
 
 	if ( pressed & kNT_button3 )
 	{
@@ -1985,7 +2074,9 @@ bool	draw( _NT_algorithm* self )
 	bool analysing = ( pThis->loops[0].loaded && !pThis->loops[0].analysed )
 		|| ( twoLoops && pThis->loops[1].loaded && !pThis->loops[1].analysed );
 
-	if ( analysing && pThis->v[ kParamSliceMode ] )
+	if ( pThis->tamed )
+		NT_drawText( 254, 12, "tamed", 15, kNT_textRight, kNT_textTiny );
+	else if ( analysing && pThis->v[ kParamSliceMode ] )
 		NT_drawText( 254, 12, "analysing", 8, kNT_textRight, kNT_textTiny );
 	else if ( pThis->cur.active )
 	{
