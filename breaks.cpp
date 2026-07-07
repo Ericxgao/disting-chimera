@@ -1547,12 +1547,65 @@ static void snapSelected( _breakSlicer* pThis, Loop& L )
 	L.manualSlices = true;
 }
 
+// snap the selected point to the nearest zero crossing (mono sum sign flip)
+static void snapZero( _breakSlicer* pThis, Loop& L )
+{
+	int s = pThis->selPoint;
+	uint32_t pt = L.sliceStart[ s ];
+	if ( L.numFrames < 2 )
+		return;
+
+	uint32_t loF = L.sliceStart[ s-1 ] + kMinSliceFrames;
+	uint32_t hiF = L.sliceStart[ s+1 ] - kMinSliceFrames;
+	if ( hiF < loF )
+		return;
+
+	const float* buf = L.sample;
+	// mono value at frame f
+	#define MONO( f ) ( buf[ 2*(f) ] + buf[ 2*(f) + 1 ] )
+
+	uint32_t best = pt;
+	bool found = false;
+	for ( uint32_t d=0; d<2048 && !found; ++d )
+	{
+		// nearest first: check below then above
+		if ( pt >= d + 1 && pt - d >= loF )
+		{
+			uint32_t f = pt - d;
+			if ( MONO( f - 1 ) * MONO( f ) <= 0.0f )
+			{
+				best = f;
+				found = true;
+				break;
+			}
+		}
+		if ( pt + d < L.numFrames && pt + d <= hiF && pt + d >= 1 )
+		{
+			uint32_t f = pt + d;
+			if ( MONO( f - 1 ) * MONO( f ) <= 0.0f )
+			{
+				best = f;
+				found = true;
+			}
+		}
+	}
+	#undef MONO
+
+	if ( !found )
+		return;
+	if ( best < loF ) best = loF;
+	if ( best > hiF ) best = hiF;
+
+	L.sliceStart[ s ] = best;
+	L.manualSlices = true;
+}
+
 uint32_t	hasCustomUi( _NT_algorithm* self )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
 	uint32_t mask = kNT_button3;
 	if ( pThis->editMode )
-		mask |= kNT_button2 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potR;
+		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potR;
 	return mask;
 }
 
@@ -1607,6 +1660,9 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 
 	if ( pressed & kNT_encoderButtonR && pThis->selPoint >= 1 )
 		snapSelected( pThis, *L );
+
+	if ( pressed & kNT_button4 && pThis->selPoint >= 1 )
+		snapZero( pThis, *L );
 
 	if ( pressed & kNT_encoderButtonL )
 		L->lockMask ^= 1u << pThis->selPoint;	// lock slice starting at this point
