@@ -80,6 +80,7 @@ enum
 	kParamSample,
 	kParamSlices,
 	kParamSliceMode,
+	kParamBars,
 
 	kParamSelectInput,
 	kParamTrigInput,
@@ -113,6 +114,7 @@ enum
 
 static const char* const sliceCountStrings[] = { "4", "8", "16", "32" };
 static const char* const sliceModeStrings[] = { "Equal", "Transient" };
+static const char* const barsStrings[] = { "1", "2" };
 static const char* const stutterDivStrings[] = { "1/2", "1/4", "1/8", "1/16", "Random" };
 static const char* const syncModeStrings[] = { "Off", "Stretch", "Repitch" };
 static const char* const clockDivStrings[] = { "Auto", "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar" };
@@ -137,6 +139,7 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Slices", .min = 0, .max = 3, .def = 2, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceCountStrings },
 	{ .name = "Slice mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceModeStrings },
+	{ .name = "Bars", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = barsStrings },
 
 	NT_PARAMETER_CV_INPUT( "Select input", 0, 0 )
 	NT_PARAMETER_CV_INPUT( "Trig input", 0, 1 )
@@ -166,7 +169,7 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Crush", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
-static const uint8_t pageSample[] = { kParamFolder, kParamSample, kParamSlices, kParamSliceMode };
+static const uint8_t pageSample[] = { kParamFolder, kParamSample, kParamSlices, kParamSliceMode, kParamBars };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
 static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
 static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamBreak };
@@ -772,7 +775,8 @@ static int randomSlice( _breakSlicer* pThis )
 
 	// Beat mode: jump to the same position within another beat,
 	// so downbeats land on downbeats and the groove survives.
-	int spb = n / 4;			// slices per beat, assuming a 1-bar 4/4 loop
+	int beats = ( pThis->v[ kParamBars ] + 1 ) * 4;		// 4/4 assumed
+	int spb = n / beats;								// slices per beat
 	if ( spb < 1 )
 		spb = 1;
 	int groups = n / spb;
@@ -1311,18 +1315,25 @@ void	setupUi( _NT_algorithm* self, _NT_float3& pots )
 }
 
 // format a 1-based slice label with musical position, e.g. "S5 b2.1"
-// (assumes the sample is one 4/4 bar; position shown only when slices divide by 4)
-static int formatSliceLabel( char* buf, int idx, int numSlices )
+// (4/4 assumed; position shown only when slices divide evenly into the beats)
+static int formatSliceLabel( char* buf, int idx, int numSlices, int bars )
 {
 	int n = 0;
 	buf[n++] = 'S';
 	n += NT_intToString( buf + n, idx + 1 );
-	if ( numSlices >= 4 && ( numSlices % 4 ) == 0 )
+	int beats = bars * 4;
+	if ( numSlices >= beats && ( numSlices % beats ) == 0 )
 	{
-		int spb = numSlices / 4;
+		int spb = numSlices / beats;
+		int beat = idx / spb;			// 0-based beat across all bars
 		buf[n++] = ' ';
+		if ( bars > 1 )
+		{
+			n += NT_intToString( buf + n, beat / 4 + 1 );
+			buf[n++] = ':';
+		}
 		buf[n++] = 'b';
-		n += NT_intToString( buf + n, idx / spb + 1 );
+		n += NT_intToString( buf + n, beat % 4 + 1 );
 		buf[n++] = '.';
 		n += NT_intToString( buf + n, idx % spb + 1 );
 	}
@@ -1410,7 +1421,7 @@ static bool drawEditor( _breakSlicer* pThis )
 	// header: selected slice (1-based, with beat position), time, zoom
 	{
 		char buf[48];
-		int n = formatSliceLabel( buf, pThis->selPoint, pThis->numSlices );
+		int n = formatSliceLabel( buf, pThis->selPoint, pThis->numSlices, pThis->v[ kParamBars ] + 1 );
 		buf[n++] = ' ';
 		float fileRate = pThis->srRatio * NT_globals.sampleRate;
 		n += NT_floatToString( buf + n, pThis->sliceStart[ pThis->selPoint ] / fileRate, 3 );
@@ -1551,7 +1562,7 @@ bool	draw( _NT_algorithm* self )
 	else if ( pThis->cur.active )
 	{
 		char buf[24];
-		formatSliceLabel( buf, pThis->cur.sliceIdx, pThis->numSlices );
+		formatSliceLabel( buf, pThis->cur.sliceIdx, pThis->numSlices, pThis->v[ kParamBars ] + 1 );
 		NT_drawText( 254, 12, buf, 8, kNT_textRight, kNT_textTiny );
 	}
 
