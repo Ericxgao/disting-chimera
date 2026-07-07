@@ -159,10 +159,10 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Level", .min = -40, .max = 6, .def = 0, .unit = kNT_unitDb, .scaling = 0, .enumStrings = NULL },
 
 	{ .name = "Loops", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = loopsStrings },
-	{ .name = "Folder", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitHasStrings, .scaling = 0, .enumStrings = NULL },
-	{ .name = "Sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
-	{ .name = "Folder B", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitHasStrings, .scaling = 0, .enumStrings = NULL },
-	{ .name = "Sample B", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Lion folder", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitHasStrings, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Lion sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Goat folder", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitHasStrings, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Goat sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Slices", .min = 0, .max = 3, .def = 2, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceCountStrings },
 	{ .name = "Slice mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceModeStrings },
 	{ .name = "Bars", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = barsStrings },
@@ -1797,8 +1797,9 @@ static bool drawEditor( _breakSlicer* pThis )
 		int n = 0;
 		if ( pThis->v[ kParamLoops ] )
 		{
-			buf[n++] = pThis->editLoop ? 'B' : 'A';
-			buf[n++] = ' ';
+			const char* head = pThis->editLoop ? "Goat " : "Lion ";
+			while ( *head )
+				buf[n++] = *head++;
 		}
 		n += formatSliceLabel( buf + n, pThis->selPoint, L.numSlices, pThis->v[ kParamBars ] + 1 );
 		buf[n++] = ' ';
@@ -1975,6 +1976,8 @@ bool	draw( _NT_algorithm* self )
 	{
 		drawStrip( pThis, 0, 15, 37 );
 		drawStrip( pThis, 1, 40, 62 );
+		NT_drawText( 254, 22, "LION", 6, kNT_textRight, kNT_textTiny );
+		NT_drawText( 254, 47, "GOAT", 6, kNT_textRight, kNT_textTiny );
 	}
 	else
 		drawStrip( pThis, 0, 18, 62 );
@@ -1986,12 +1989,13 @@ bool	draw( _NT_algorithm* self )
 		NT_drawText( 254, 12, "analysing", 8, kNT_textRight, kNT_textTiny );
 	else if ( pThis->cur.active )
 	{
-		char buf[24];
+		char buf[32];
 		int n = 0;
 		if ( twoLoops )
 		{
-			buf[n++] = pThis->cur.loopIdx ? 'B' : 'A';
-			buf[n++] = ' ';
+			const char* head = pThis->cur.loopIdx ? "Goat " : "Lion ";
+			while ( *head )
+				buf[n++] = *head++;
 		}
 		formatSliceLabel( buf + n, pThis->cur.sliceIdx, pThis->loops[ pThis->cur.loopIdx ].numSlices, pThis->v[ kParamBars ] + 1 );
 		NT_drawText( 254, 12, buf, 8, kNT_textRight, kNT_textTiny );
