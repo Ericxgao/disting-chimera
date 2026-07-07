@@ -1310,6 +1310,26 @@ void	setupUi( _NT_algorithm* self, _NT_float3& pots )
 	pots[2] = pThis->zoomPot;
 }
 
+// format a 1-based slice label with musical position, e.g. "S5 b2.1"
+// (assumes the sample is one 4/4 bar; position shown only when slices divide by 4)
+static int formatSliceLabel( char* buf, int idx, int numSlices )
+{
+	int n = 0;
+	buf[n++] = 'S';
+	n += NT_intToString( buf + n, idx + 1 );
+	if ( numSlices >= 4 && ( numSlices % 4 ) == 0 )
+	{
+		int spb = numSlices / 4;
+		buf[n++] = ' ';
+		buf[n++] = 'b';
+		n += NT_intToString( buf + n, idx / spb + 1 );
+		buf[n++] = '.';
+		n += NT_intToString( buf + n, idx % spb + 1 );
+	}
+	buf[n] = 0;
+	return n;
+}
+
 // peak level over a frame range, using the hop mipmap when zoomed out
 static float rangePeak( _breakSlicer* pThis, uint32_t f0, uint32_t f1 )
 {
@@ -1387,12 +1407,10 @@ static bool drawEditor( _breakSlicer* pThis )
 		}
 	}
 
-	// header: selected point, time, zoom
+	// header: selected slice (1-based, with beat position), time, zoom
 	{
-		char buf[40];
-		int n = 0;
-		buf[n++] = 'P';
-		n += NT_intToString( buf + n, pThis->selPoint );
+		char buf[48];
+		int n = formatSliceLabel( buf, pThis->selPoint, pThis->numSlices );
 		buf[n++] = ' ';
 		float fileRate = pThis->srRatio * NT_globals.sampleRate;
 		n += NT_floatToString( buf + n, pThis->sliceStart[ pThis->selPoint ] / fileRate, 3 );
@@ -1530,6 +1548,12 @@ bool	draw( _NT_algorithm* self )
 
 	if ( !pThis->analysed && pThis->v[ kParamSliceMode ] )
 		NT_drawText( 254, 12, "analysing", 8, kNT_textRight, kNT_textTiny );
+	else if ( pThis->cur.active )
+	{
+		char buf[24];
+		formatSliceLabel( buf, pThis->cur.sliceIdx, pThis->numSlices );
+		NT_drawText( 254, 12, buf, 8, kNT_textRight, kNT_textTiny );
+	}
 
 	if ( pThis->v[ kParamSync ] && pThis->clockPeriod > 0.0f )
 	{
