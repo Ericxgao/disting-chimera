@@ -1,6 +1,7 @@
 /*
- * Break Slicer
+ * Chimera
  * CV-addressable breakbeat slicer for the Expert Sleepers Disting NT.
+ * One beast stitched from two breaks.
  * Inspired by amen (norns) and zeptocore/ectocore.
  *
  * Architecture:
@@ -2019,9 +2020,9 @@ bool	draw( _NT_algorithm* self )
 
 static const _NT_factory factory =
 {
-	.guid = NT_MULTICHAR( 'B', 'r', 'k', 's' ),
-	.name = "Break Slicer",
-	.description = "CV-addressable breakbeat slicer",
+	.guid = NT_MULTICHAR( 'C', 'h', 'i', 'm' ),
+	.name = "Chimera",
+	.description = "Two-headed breakbeat slicer",
 	.numSpecifications = ARRAY_SIZE(specifications),
 	.specifications = specifications,
 	.calculateStaticRequirements = NULL,
