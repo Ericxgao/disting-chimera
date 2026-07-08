@@ -9,7 +9,8 @@
  *   (equal grid, or transient mode: grid points snap to nearest onset)
  *
  * Triggering:
- *   Select CV in (0-5V -> slice index) sampled on Trigger in rising edge
+ *   Select CV in (0-5V -> slice index, or 1V/oct note -> slice index with
+ *   an adjustable root note) sampled on Trigger in rising edge
  *   Random in     -> plays a random slice (Free, or Beat: groove-preserving)
  *   Clock in      -> steps through slices (forward/reverse/pingpong/walk/shuffle)
  *   Reset in      -> stepping back to slice 1
@@ -82,6 +83,11 @@ static uint32_t muldivU32( uint32_t a, uint32_t b, uint32_t c )
 		}
 	}
 	return q;
+}
+
+static inline int roundToInt( float x )
+{
+	return ( x >= 0.0f ) ? (int)( x + 0.5f ) : -(int)( -x + 0.5f );
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +165,9 @@ enum
 	kParamCrush,
 	kParamDrive,
 
+	kParamSelectMode,
+	kParamSelectOffset,
+
 	kNumParams,
 };
 
@@ -174,6 +183,7 @@ static const char* const clockDivStrings[] = { "Auto", "1/32", "1/16", "1/8", "1
 // quarter notes per clock tick, indexed by kParamClockDiv (entry 0 unused: Auto)
 static const float clockDivQuarters[] = { 1.0f, 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
 
+static const char* const selectModeStrings[] = { "Linear", "1V/Oct" };
 static const char* const stepModeStrings[] = { "Forward", "Reverse", "PingPong", "Walk", "Shuffle" };
 static const char* const randomModeStrings[] = { "Free", "Beat" };
 static const char* const ratchetDivStrings[] = { "1/1", "1/2", "1/3", "1/4", "1/8" };
@@ -228,10 +238,13 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Stretch amount", .min = 110, .max = 400, .def = 200, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Crush", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Drive", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "Select mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = selectModeStrings },
+	{ .name = "Select offset", .min = 0, .max = 127, .def = 36, .unit = kNT_unitMIDINote, .scaling = 0, .enumStrings = NULL },
 };
 
 static const uint8_t pageSample[] = { kParamLoops, kParamFolder, kParamSample, kParamFolderB, kParamSampleB, kParamSlices, kParamSliceMode, kParamBars };
-static const uint8_t pageTriggers[] = { kParamSelectInput, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
+static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
 static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
 static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak };
 static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive };
@@ -738,6 +751,7 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	NT_setParameterGrayedOut( algIdx, kParamBlend + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamBlendMode + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamQuarrel + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamSelectOffset + off, pThis->v[ kParamSelectMode ] == 0 );
 }
 
 void	parameterChanged( _NT_algorithm* self, int p )
@@ -752,6 +766,9 @@ void	parameterChanged( _NT_algorithm* self, int p )
 			requestLoad( pThis, 1 );
 		if ( !pThis->v[ kParamLoops ] )
 			pThis->editLoop = 0;
+		break;
+	case kParamSelectMode:
+		updateGrayedOut( pThis );
 		break;
 	case kParamFolder:
 	case kParamFolderB:
@@ -1464,7 +1481,17 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 			if ( selBus )
 			{
 				float cv = selBus[i];
-				int idx = (int)( cv * ( canonicalSlices( pThis ) / 5.0f ) );
+				int idx;
+				if ( pv[ kParamSelectMode ] )
+				{
+					// 1V/oct: quantize to the nearest semitone (0V = MIDI
+					// note 60), then offset so the chosen root note lands
+					// on slice 0 -- e.g. set offset to C2 to make C2 slice 1
+					int note = 60 + roundToInt( cv * 12.0f );
+					idx = note - pv[ kParamSelectOffset ];
+				}
+				else
+					idx = (int)( cv * ( canonicalSlices( pThis ) / 5.0f ) );
 				triggerSlice( pThis, idx );
 			}
 			else
@@ -1874,7 +1901,8 @@ static bool drawEditor( _breakSlicer* pThis )
 	uint32_t visStart, visFrames;
 	editorView( pThis, L, visStart, visFrames );
 
-	const int top = 14, bottom = 62, mid = ( top + bottom ) / 2;
+	// bottom 8px reserved for the control legend
+	const int top = 14, bottom = 54, mid = ( top + bottom ) / 2;
 	float scale = ( L.waveMax > 0.001f ) ? ( ( bottom - top ) * 0.5f ) / L.waveMax : 0.0f;
 
 	// waveform at current zoom
@@ -1935,11 +1963,29 @@ static bool drawEditor( _breakSlicer* pThis )
 		n += NT_floatToString( buf + n, L.sliceStart[ pThis->selPoint ] / fileRate, 3 );
 		buf[n++] = 's';
 		buf[n++] = ' ';
-		buf[n++] = 'x';
+		{
+			const char* z = "PotR x";
+			while ( *z )
+				buf[n++] = *z++;
+		}
 		n += NT_floatToString( buf + n, (float)L.numFrames / visFrames, 1 );
 		buf[n] = 0;
 		NT_drawText( 0, 10, buf, 15, kNT_textLeft, kNT_textTiny );
 		NT_drawText( 254, 10, L.manualSlices ? "edited" : "edit", 8, kNT_textRight, kNT_textTiny );
+	}
+
+	// control legend: EncL (always) / centre buttons (context) / EncR (needs a movable point)
+	{
+		bool pointEditable = pThis->selPoint >= 1;
+		NT_drawText( 0, 62, "EncL:Sel Push:Lock", 8, kNT_textLeft, kNT_textTiny );
+		if ( pThis->v[ kParamLoops ] && pointEditable )
+			NT_drawText( 128, 62, "B2:Loop  B4:Zero", 8, kNT_textCentre, kNT_textTiny );
+		else if ( pThis->v[ kParamLoops ] )
+			NT_drawText( 128, 62, "B2:Loop", 8, kNT_textCentre, kNT_textTiny );
+		else if ( pointEditable )
+			NT_drawText( 128, 62, "B4:Zero", 8, kNT_textCentre, kNT_textTiny );
+		if ( pointEditable )
+			NT_drawText( 256, 62, "EncR:Nudge Push:Snap", 8, kNT_textRight, kNT_textTiny );
 	}
 
 	return true;	// suppress the standard parameter line
@@ -2113,10 +2159,12 @@ bool	draw( _NT_algorithm* self )
 	bool analysing = ( pThis->loops[0].loaded && !pThis->loops[0].analysed )
 		|| ( twoLoops && pThis->loops[1].loaded && !pThis->loops[1].analysed );
 
+	// y=30: the host draws its own icon in the top-right corner above here,
+	// and this needs to clear the LION label (y=22) in two-loop mode too
 	if ( pThis->tamed )
-		NT_drawText( 254, 12, "tamed", 15, kNT_textRight, kNT_textTiny );
+		NT_drawText( 254, 30, "tamed", 15, kNT_textRight, kNT_textTiny );
 	else if ( analysing && pThis->v[ kParamSliceMode ] )
-		NT_drawText( 254, 12, "analysing", 8, kNT_textRight, kNT_textTiny );
+		NT_drawText( 254, 30, "analysing", 8, kNT_textRight, kNT_textTiny );
 	else if ( pThis->cur.active )
 	{
 		char buf[32];
@@ -2128,7 +2176,7 @@ bool	draw( _NT_algorithm* self )
 				buf[n++] = *head++;
 		}
 		formatSliceLabel( buf + n, pThis->cur.sliceIdx, pThis->loops[ pThis->cur.loopIdx ].numSlices, pThis->v[ kParamBars ] + 1 );
-		NT_drawText( 254, 12, buf, 8, kNT_textRight, kNT_textTiny );
+		NT_drawText( 254, 30, buf, 8, kNT_textRight, kNT_textTiny );
 	}
 
 	if ( pThis->v[ kParamSync ] && pThis->clockPeriod > 0.0f )
