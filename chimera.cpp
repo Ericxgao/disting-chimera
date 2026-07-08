@@ -59,6 +59,32 @@ static const float kTrigHi = 1.0f;		// volts, rising edge threshold
 static const float kTrigLo = 0.5f;		// volts, re-arm threshold
 
 // ---------------------------------------------------------------------------
+// (a*b)/c in 64-bit, without __aeabi_uldivmod (firmware doesn't export libgcc
+// helpers). Quotient must fit in 32 bits, as it does for frame/pixel scaling.
+
+static uint32_t muldivU32( uint32_t a, uint32_t b, uint32_t c )
+{
+	uint64_t n = (uint64_t)a * b;
+	uint32_t hi = (uint32_t)( n >> 32 );
+	uint32_t lo = (uint32_t)n;
+	if ( !hi )
+		return lo / c;
+	uint32_t rem = hi % c;
+	uint32_t q = 0;
+	for ( int i=31; i>=0; --i )
+	{
+		uint32_t carry = rem >> 31;
+		rem = ( rem << 1 ) | ( ( lo >> i ) & 1 );
+		if ( carry || rem >= c )
+		{
+			rem -= c;
+			q |= 1u << i;
+		}
+	}
+	return q;
+}
+
+// ---------------------------------------------------------------------------
 // small deterministic RNG (xorshift32)
 
 struct Rng
@@ -419,7 +445,7 @@ static void computeSlices( _breakSlicer* pThis, Loop& L )
 
 	for ( int i=1; i<n; ++i )
 	{
-		uint32_t grid = (uint32_t)( (uint64_t)i * total / n );
+		uint32_t grid = muldivU32( i, total, n );
 
 		if ( transient )
 		{
@@ -735,6 +761,11 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		NT_getSampleFolderInfo( pThis->v[ p ], folderInfo );
 		pThis->params[ sampleParam ].max = folderInfo.numSampleFiles ? folderInfo.numSampleFiles - 1 : 0;
 		NT_updateParameterDefinition( NT_algorithmIndex( self ), sampleParam );
+		// folder change alone never fires the sample param, so kick the
+		// load of the (now re-clamped) current index here
+		int li = ( p == kParamFolder ) ? 0 : 1;
+		if ( li == 0 || pThis->v[ kParamLoops ] )
+			requestLoad( pThis, li );
 	}
 		break;
 	case kParamSample:
@@ -1282,7 +1313,7 @@ static void analyseChunk( _breakSlicer* pThis, Loop& L )
 		L.prevHopEnergy = energy;
 
 		// waveform display bucket
-		uint32_t b = (uint32_t)( (uint64_t)pos * kWaveBuckets / L.numFrames );
+		uint32_t b = muldivU32( pos, kWaveBuckets, L.numFrames );
 		if ( b >= kWaveBuckets )
 			b = kWaveBuckets - 1;
 		if ( peak > L.wave[ b ] )
@@ -1430,9 +1461,17 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		}
 		if ( trigBus && risingEdge( trigBus[i], pThis->trigArmed ) )
 		{
-			float cv = selBus ? selBus[i] : 0.0f;
-			int idx = (int)( cv * ( canonicalSlices( pThis ) / 5.0f ) );
-			triggerSlice( pThis, idx );
+			if ( selBus )
+			{
+				float cv = selBus[i];
+				int idx = (int)( cv * ( canonicalSlices( pThis ) / 5.0f ) );
+				triggerSlice( pThis, idx );
+			}
+			else
+			{
+				// no Select CV: triggers follow the step mode, like Clock
+				triggerSlice( pThis, nextStep( pThis ) );
+			}
 		}
 		if ( randBus && risingEdge( randBus[i], pThis->randArmed ) )
 			triggerSlice( pThis, randomSlice( pThis ) );
@@ -1841,8 +1880,8 @@ static bool drawEditor( _breakSlicer* pThis )
 	// waveform at current zoom
 	for ( int x=0; x<256; ++x )
 	{
-		uint32_t f0 = visStart + (uint32_t)( (uint64_t)x * visFrames / 256 );
-		uint32_t f1 = visStart + (uint32_t)( (uint64_t)( x + 1 ) * visFrames / 256 );
+		uint32_t f0 = visStart + (uint32_t)( ( (uint64_t)x * visFrames ) >> 8 );
+		uint32_t f1 = visStart + (uint32_t)( ( (uint64_t)( x + 1 ) * visFrames ) >> 8 );
 		int h = (int)( rangePeak( L, f0, f1 ) * scale );
 		if ( h > ( bottom - top ) / 2 )
 			h = ( bottom - top ) / 2;
@@ -1855,7 +1894,7 @@ static bool drawEditor( _breakSlicer* pThis )
 		uint32_t pt = L.sliceStart[ s ];
 		if ( pt < visStart || pt >= visStart + visFrames )
 			continue;
-		int x = (int)( (uint64_t)( pt - visStart ) * 256 / visFrames );
+		int x = (int)muldivU32( pt - visStart, 256, visFrames );
 		bool sel = ( s == pThis->selPoint );
 		NT_drawShapeI( kNT_line, x, top, x, bottom, sel ? 15 : 8 );
 		if ( sel )
@@ -2018,7 +2057,7 @@ static void drawStrip( _breakSlicer* pThis, int li, int top, int bottom )
 	uint32_t total = L.numFrames;
 	for ( int s=0; s<L.numSlices; ++s )
 	{
-		int x = (int)( (uint64_t)L.sliceStart[ s ] * 256 / total );
+		int x = (int)muldivU32( L.sliceStart[ s ], 256, total );
 		if ( s )
 			NT_drawShapeI( kNT_line, x, top, x, bottom, 10 );
 		if ( ( L.lockMask >> s ) & 1 )
@@ -2034,8 +2073,8 @@ static void drawStrip( _breakSlicer* pThis, int li, int top, int bottom )
 	if ( v )
 	{
 		int s = v->sliceIdx;
-		int x0 = (int)( (uint64_t)L.sliceStart[ s ] * 256 / total );
-		int x1 = (int)( (uint64_t)L.sliceStart[ s + 1 ] * 256 / total );
+		int x0 = (int)muldivU32( L.sliceStart[ s ], 256, total );
+		int x1 = (int)muldivU32( L.sliceStart[ s + 1 ], 256, total );
 		NT_drawShapeI( kNT_rectangle, x0, top, x1, top + 1, 15 );
 
 		float p = v->stretch ? ( v->grainStart + v->dir * v->grainPhase ) : v->pos;
