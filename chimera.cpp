@@ -1485,9 +1485,10 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 				if ( pv[ kParamSelectMode ] )
 				{
 					// 1V/oct: quantize to the nearest semitone (0V = MIDI
-					// note 60), then offset so the chosen root note lands
-					// on slice 0 -- e.g. set offset to C2 to make C2 slice 1
-					int note = 60 + roundToInt( cv * 12.0f );
+					// note 12, C0 -- standard Eurorack 1V/oct reference),
+					// then offset so the chosen root note lands on slice 0
+					// -- e.g. set offset to C2 to make C2 slice 1
+					int note = 12 + roundToInt( cv * 12.0f );
 					idx = note - pv[ kParamSelectOffset ];
 				}
 				else
