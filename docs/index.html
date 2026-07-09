@@ -275,6 +275,8 @@
     <a href="#sequence">Sequence &amp; sync</a>
     <a href="#fx">Effect dice</a>
     <a href="#blend">Blend, Quarrel, Serpent</a>
+    <a href="#roles">Role tags &amp; grooves</a>
+    <a href="#beef">Beef</a>
     <a href="#display">The display</a>
     <a href="#params">Parameter reference</a>
     <a href="#tips">Field notes</a>
@@ -286,20 +288,23 @@
 <section id="beast">
   <h2>The beast</h2>
   <canvas class="rule" aria-hidden="true"></canvas>
-  <p>Chimera is a CV-addressable breakbeat slicer: one beast stitched from two breaks. It loads one or two WAV loops into memory, cuts each into 4–32 slices, and fires slices from triggers, clocks, random pulses, CV, or MIDI. Every slice event rolls a set of effect dice — reverse, pitch, stutter, stretch, gate, filter, echo — so a static loop becomes a living break.</p>
+  <p>Chimera is a CV-addressable breakbeat slicer: one beast stitched from two breaks. It loads one or two WAV loops into memory, cuts each into 4–32 slices, and fires slices from triggers, clocks, random pulses, CV, or MIDI. Every slice event rolls a set of effect dice — reverse, pitch, stutter, stretch, gate, filter, echo — so a static loop becomes a living break. Tag slices with drum roles and the beast can reassemble its own break into a groove template, or layer clean one-shots on top without touching the fx chain.</p>
   <p class="soft">Inspired by <a href="https://norns.community/amen/" target="_blank" rel="noopener">amen</a> (norns) and zeptocore/<a href="https://getectocore.com/" target="_blank" rel="noopener">ectocore</a>.</p>
 
   <pre class="flow"><b>WAV A</b> <em>LION</em> ─┐                                        ┌── <em>serpent echo</em> ──┐
             ├── slices ── <em>trims</em> ── voice ── <em>fx dice</em> ─┤                  ├── drive ── crush ── <b>OUT</b>
 <b>WAV B</b> <em>GOAT</em> ─┘                                        └──────────────────┘
+                                       + <em>beef</em> one-shot (role-tagged, straight, ducks the original)
 
-            slices: equal / transient · trims: level·rate·pitch·filter
-            dice: reverse · pitch · stutter · stretch · gate · filter · serpent</pre>
+            slices: equal / transient · roles: Kick·Snare·Perc·Hat·Crash
+            trims: level·rate·pitch·filter · dice: reverse·pitch·stutter·stretch·gate·filter·serpent
+            always-on: backbeat weight · low-pass gate · crush · drive</pre>
 
   <div class="heads">
-    <div class="head-card"><div class="hn">Lion</div><p>Loop A. The master head: its slice count addresses the sequencer, CV and MIDI.</p></div>
+    <div class="head-card"><div class="hn">Lion</div><p>Loop A. The master head: its slice count and role tags address the sequencer, CV and MIDI.</p></div>
     <div class="head-card"><div class="hn">Goat</div><p>Loop B. The second head. Blend decides how often it butts in — or crossfades against Lion.</p></div>
     <div class="head-card"><div class="hn">Serpent</div><p>The tail. A dub delay send, rolled per slice like any other effect. Dark, clock-chasing repeats.</p></div>
+    <div class="head-card"><div class="hn">Beef</div><p>Layer clean one-shots on top of role-tagged slices — a kick, a snare, whatever — untouched by the dice.</p></div>
   </div>
 </section>
 
@@ -308,7 +313,7 @@
   <canvas class="rule" aria-hidden="true"></canvas>
   <ul>
     <li>Put stereo or mono WAVs on the SD card in sample folders.</li>
-    <li>Add the algorithm. The <code>Max length</code> specification (1–32 s, default 8 s) reserves DRAM per loop — pick it when you add Chimera.</li>
+    <li>Add the algorithm. Two specifications are chosen at this point and can't be changed without re-adding it: <code>Max length</code> (1–32 s, default 8 s, DRAM per loop) and <code>Beef length</code> (1–8 s, default 2 s, DRAM per one-shot slot — see <a href="#beef">Beef</a>).</li>
     <li>On the <b>Lion</b> page, choose a folder and sample. Loading is asynchronous; the display says <code>Loading...</code> until the break is in memory and sliced.</li>
     <li>For a second break, set <code>Loops</code> to <code>2</code> on the <b>Sample</b> page, then pick Goat's folder and sample on the <b>Goat</b> page.</li>
   </ul>
@@ -341,22 +346,27 @@
     <li><b>Transient</b> — each grid point snaps to the strongest onset within ±40 % of a slice. Onset analysis runs in the background after load (<code>analysing</code> appears top-right); slices re-snap when it finishes.</li>
   </ul>
   <p><code>Bars</code> (1 or 2) tells Chimera how long the loop is musically. It drives the beat-aware random mode and the <code>b2.3</code>-style position labels on the display. 4/4 assumed — it's a breakbeat slicer.</p>
+  <p>Slices can also carry a <b>drum-role tag</b> — Kick, Snare, Perc, Hat or Crash — set per slice in the editor. Untagged slices play as normal; tagged ones feed three other features: <a href="#trigger">Random's Role mode</a>, <a href="#sequence">Step mode's Pattern</a>, and <a href="#beef">Beef</a>'s one-shot layering. See <a href="#roles">Role tags &amp; grooves</a>.</p>
 </section>
 
 <section id="editor">
   <h2>Slice editor</h2>
   <canvas class="rule" aria-hidden="true"></canvas>
-  <p>Press <kbd>Button 3</kbd> to enter the editor: a zoomable waveform with movable slice points, Octatrack style. Press again to leave. Manual points and locks are saved with the preset.</p>
+  <p>Press <kbd>Button 3</kbd> to enter the editor: a zoomable waveform with movable slice points, Octatrack style. Press again to leave. Manual points, locks and role tags are saved with the preset.</p>
   <div class="tblwrap"><table>
     <tr><th>Control</th><th>Action</th></tr>
     <tr><td><kbd>Encoder L</kbd></td><td>Select a slice point.</td></tr>
-    <tr><td><kbd>Encoder L push</kbd></td><td>Lock / unlock the slice starting here. Locked slices always play straight — no dice.</td></tr>
+    <tr><td><kbd>Encoder L push</kbd></td><td>Preview the selected slice — straight, no dice, so you hear exactly what's under the cursor.</td></tr>
     <tr><td><kbd>Encoder R</kbd></td><td>Nudge the point. Step size follows zoom — one screen pixel per click.</td></tr>
     <tr><td><kbd>Encoder R push</kbd></td><td>Snap to the strongest onset within ~0.2 s.</td></tr>
     <tr><td><kbd>Button 4</kbd></td><td>Snap to the nearest zero crossing.</td></tr>
     <tr><td><kbd>Button 2</kbd></td><td>Switch between Lion and Goat.</td></tr>
+    <tr><td><kbd>Button 3</kbd></td><td>Exit the editor.</td></tr>
+    <tr><td><kbd>Pot L push</kbd></td><td>Lock / unlock the slice starting here. Locked slices always play straight — no dice.</td></tr>
+    <tr><td><kbd>Pot C</kbd> / push</td><td>Turn to set, or push to cycle, the selected slice's drum-role tag: none → Kick → Snare → Perc → Hat → Crash.</td></tr>
     <tr><td><kbd>Pot R</kbd></td><td>Zoom, 1× to 256×, centred on the selected point.</td></tr>
   </table></div>
+  <p>A small letter under a tagged slice (K/S/P/H/C) shows its role; it brightens when that slice is selected. A control legend along the bottom of the screen echoes this table live, and brightens whichever control you last touched.</p>
   <p class="soft">Changing <code>Slices</code> or <code>Slice mode</code> re-slices from scratch and discards manual edits — deliberately.</p>
 </section>
 
@@ -366,24 +376,26 @@
   <p>Six assignable CV inputs. Rising edges fire at 1 V, re-arm at 0.5 V.</p>
   <div class="tblwrap"><table>
     <tr><th>Input</th><th>Behaviour</th></tr>
-    <tr><td>Select</td><td>Chooses the slice; sampled at the moment Trig fires. <b>Linear</b>: 0–5 V spans all slices. <b>1V/Oct</b>: quantised to semitones, 0 V = C0; <code>Select offset</code> sets which note is slice 1, one slice per semitone up.</td></tr>
+    <tr><td>Select</td><td>Chooses the slice; sampled at the moment Trig fires. <b>Linear</b>: 0–5 V spans all slices. <b>1V/Oct</b>: quantised to semitones, 0 V = C0 (standard Eurorack reference); <code>Select offset</code> sets which note is slice 1, one slice per semitone up. Default offset is C0 — patch a sequencer's pitch CV straight in and it lines up.</td></tr>
     <tr><td>Trig</td><td>Fires the selected slice. With no Select input patched, each trig advances the step sequence instead.</td></tr>
     <tr><td>Random</td><td>Fires a random slice — see <code>Random mode</code>.</td></tr>
-    <tr><td>Clock</td><td>Steps through slices (see <code>Step mode</code>) and teaches Chimera the tempo for sync, ratchets and the serpent.</td></tr>
+    <tr><td>Clock</td><td>Steps through slices (see <code>Step mode</code>) and teaches Chimera the tempo for sync, ratchets and the serpent. Incoming MIDI clock drives the same things if no analog Clock is patched.</td></tr>
     <tr><td>Reset</td><td>Pulls the sequence back to slice 1.</td></tr>
     <tr><td>Ratchet</td><td>A held gate retrigs the current slice at <code>Ratchet div</code> (1/1 … 1/8 of a clock tick).</td></tr>
   </table></div>
+  <h3>Random mode</h3>
+  <p><b>Free</b> picks any slice. <b>Beat</b> jumps to the same position inside another beat, so downbeats land on downbeats. <b>Role</b> scans a boom-bap-ish template (kicks on downbeats, snares on backbeats, hats between) and picks a random slice carrying the tag that position expects — falling back to any slice when that role isn't tagged anywhere.</p>
   <h3>MIDI</h3>
-  <p>Notes from 36 upward play slices directly — note 36 is slice 1, chromatically up. <code>MIDI channel</code> selects Omni or channels 1–16.</p>
+  <p>Notes from 36 upward play slices directly — note 36 is slice 1, chromatically up. <code>MIDI channel</code> selects Omni or channels 1–16. Incoming MIDI clock (24 PPQN, Start/Stop/Continue aware) substitutes for the analog Clock input when nothing's patched there — it drives Sync, the sequence step, ratchets and the serpent's tempo-chase alike; realtime clock bytes are channelless, so <code>MIDI channel</code> doesn't gate them.</p>
 </section>
 
 <section id="sequence">
   <h2>Sequence &amp; sync</h2>
   <canvas class="rule" aria-hidden="true"></canvas>
   <h3>Step mode</h3>
-  <p><b>Forward</b>, <b>Reverse</b>, <b>PingPong</b>, <b>Walk</b> (drunk ±1), <b>Shuffle</b> (a random permutation, re-dealt each full cycle — every slice exactly once).</p>
-  <h3>Random mode</h3>
-  <p><b>Free</b> picks any slice. <b>Beat</b> jumps to the same position inside another beat, so downbeats land on downbeats and the groove survives the chaos.</p>
+  <p><b>Forward</b>, <b>Reverse</b>, <b>PingPong</b>, <b>Walk</b> (drunk ±1), <b>Shuffle</b> (a random permutation, re-dealt each full cycle — every slice exactly once), <b>Pattern</b> (a 16-step groove template — see below).</p>
+  <h3>Pattern</h3>
+  <p>With Step mode set to Pattern, each clock tick advances through a 16-step groove template (<code>Pattern</code>: Boom-bap, 4-floor, Two-step, Half-time) mapped across the loop's bars. Every step expects a drum role; Chimera picks a random slice carrying that tag (falling back to any slice if the role isn't tagged anywhere), so a role-tagged break reassembles itself into the chosen groove. Blend, Break and the dice all still apply on top.</p>
   <h3>Sync</h3>
   <p>With a clock patched, <code>Sync</code> conforms each slice to the measured tempo:</p>
   <ul>
@@ -409,10 +421,13 @@
   </table></div>
   <h3>Break</h3>
   <p>The macro. Scales every probability at once: <b>50 = as set</b>, 0 = all dice silent, 100 = all doubled. Map it to a big knob.</p>
+  <h3>Backbeat</h3>
+  <p>A second, rhythm-aware weight on top of Break. At 0 every event rolls normally. As it rises, downbeats (beats 1 &amp; 3 in 4/4) are pulled toward zero probability, so at 100 % the dice only ever fire on backbeats (2 &amp; 4) — downbeats always play straight, everything else keeps rolling. Good for keeping a groove's anchors steady while the chaos lives on the offbeats.</p>
   <h3>Tame</h3>
   <p>Hold <kbd>Button 1</kbd> and the beast behaves — every die is suppressed while held. <code>tamed</code> shows on the display. Release to let it loose.</p>
   <h3>Always-on colour</h3>
   <p><code>Crush</code> is an SP-1200-calibrated decimator — 50 is exactly 12 bits at 26.04 kHz. <code>Drive</code> is soft-clip saturation with automatic makeup gain. Both sit on the master bus, after the echo.</p>
+  <p><code>LPG</code> is a per-slice low-pass gate (vactrol-style): every slice event strikes it fresh, sweeping the cutoff open then letting it decay — <code>LPG decay</code> sets how long (short pluck to full-slice length, ±10 % drift per strike so runs don't sound identical), <code>LPG res</code> adds resonance. Depth 0 is off; unlike the dice, this isn't a probability — once on, it's on every slice.</p>
 </section>
 
 <section id="blend">
@@ -430,14 +445,42 @@
   <p>A dub delay tail. Slices that roll the Serpent die are sent into a feedback echo with darkened repeats. The delay time chases the clock at a dotted-eighth feel (¾ of a tick); unclocked it sits at 375 ms.</p>
 </section>
 
+<section id="roles">
+  <h2>Role tags &amp; grooves</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <p>Tag any slice with a drum role — <b>Kick, Snare, Perc, Hat, Crash</b> — in the <a href="#editor">slice editor</a>: <kbd>Pot C</kbd> to set or cycle it, and a small letter (K/S/P/H/C) appears under the slice. Untagged slices are ignored by everything below and play exactly as before.</p>
+  <p>Three features read the tags:</p>
+  <ul>
+    <li><b>Random mode: Role</b> — scans a boom-bap-ish template (kicks on downbeats, snares on backbeats, hats between) and fires a random slice carrying the tag that position expects.</li>
+    <li><b>Step mode: Pattern</b> — steps through a 16-step groove template (Boom-bap, 4-floor, Two-step, Half-time) the same way, but clocked instead of on Random pulses.</li>
+    <li><b>Beef</b> — layers a clean one-shot on top of whichever role fires, regardless of how it fired.</li>
+  </ul>
+  <p class="soft">Both Role and Pattern fall back to a plain random slice when the expected tag isn't present anywhere in the loop — an untagged break still plays, it just doesn't reassemble into the template.</p>
+</section>
+
+<section id="beef">
+  <h2>Beef</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <p>Layer a one-shot sample on top of a role-tagged slice — beef up a thin kick, add a clap to the snare, whatever the break's missing. The <b>Beef</b> page holds one shared <code>Beef folder</code> plus a <code>Sample</code>, <code>Level</code> and <code>Duck</code> for each of the five roles.</p>
+  <div class="tblwrap"><table>
+    <tr><th>Param (per role)</th><th>Range</th><th>Default</th><th>What it does</th></tr>
+    <tr><td>Sample</td><td class="rng">None / file</td><td class="rng">None</td><td>Picked from the shared Beef folder. None means the role is off — nothing loads, nothing plays.</td></tr>
+    <tr><td>Level</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>One-shot volume. 0 means off even if a sample is assigned — existing presets stay silent on this feature until you turn it up.</td></tr>
+    <tr><td>Duck</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>How hard the <i>original</i> slice ducks while its one-shot plays. The duck follows the one-shot's own envelope, so it attacks and releases in step with the hit rather than on a separate timer.</td></tr>
+  </table></div>
+  <p>Whenever a slice fires, its role tag (from whichever loop is the canonical/master one) looks up that role's one-shot. If it's loaded and Level &gt; 0, it plays — straight, from its own voice, completely bypassing the effect dice, Break, Tame, the per-loop static filter and the low-pass gate. It doesn't feed the serpent tail either. One beef hit chokes the previous one, same declick behaviour as the main voice.</p>
+  <p class="soft">Beef one-shots get their own DRAM budget, sized by the <code>Beef length</code> specification (1–8 s, default 2 s, chosen when you add the algorithm) — five slots' worth, regardless of how many roles you actually use.</p>
+</section>
+
 <section id="display">
   <h2>The display</h2>
   <canvas class="rule" aria-hidden="true"></canvas>
   <div class="screen-wrap">
-    <canvas id="screen" width="256" height="64" role="img" aria-label="Mock of the performance display: two waveform strips with slice markers, labels LION and GOAT, current slice highlighted"></canvas>
-    <div class="screen-cap">PERFORMANCE VIEW · two loops · playhead on Lion, slice 5, beat 2.1</div>
+    <canvas id="screen" width="256" height="64" role="img" aria-label="Mock of the performance display: two waveform strips with slice markers, LION and GOAT centred and outlined, current slice highlighted"></canvas>
+    <div class="screen-cap">PERFORMANCE VIEW · two loops, Xfade blend · Lion dimmer than Goat</div>
   </div>
-  <p>One strip per loop — waveform, slice markers, lock flags, the current slice underlined, a moving playhead. Top-right shows the last event as <code>Lion S5 b2.1</code>: slice number plus its musical position (only when slices divide evenly into the beats). Top-left shows tempo when synced. Status text says <code>analysing</code>, <code>tamed</code>, <code>Loading...</code> or <code>No sample</code> when relevant.</p>
+  <p>One strip per loop — waveform, slice markers, lock flags, the current slice underlined, a moving playhead. <code>LION</code>/<code>GOAT</code> sit centred in each strip with a 1px black halo, so they stay legible over the waveform. In Xfade blend mode each strip's waveform brightness tracks its live crossfade level — the quieter head visibly dims. Top-left shows tempo when synced, as <code>174&gt;172.3</code>. Top-right shows <code>tamed</code> or <code>analysing</code> when relevant — kept clear of the host's own top-right status icon.</p>
+  <p>The <a href="#editor">slice editor</a> is a separate full-screen view: zoomed waveform, slice points, role letters, and a bottom control legend that brightens whichever control you last touched.</p>
 </section>
 
 <section id="params">
@@ -459,12 +502,13 @@
     <tr class="grp"><td colspan="4">Triggers</td></tr>
     <tr><td>Select / Trig / Random / Clock / Reset / Ratchet</td><td class="rng">bus</td><td class="rng">—</td><td>Six CV inputs, all optional.</td></tr>
     <tr><td>Select mode</td><td class="rng">Linear / 1V/Oct</td><td class="rng">Linear</td><td></td></tr>
-    <tr><td>Select offset</td><td class="rng">0 … 127</td><td class="rng">36</td><td>Root note for 1V/Oct.</td></tr>
+    <tr><td>Select offset</td><td class="rng">0 … 127</td><td class="rng">12 (C0)</td><td>Root note for 1V/Oct.</td></tr>
     <tr class="grp"><td colspan="4">Sequence</td></tr>
     <tr><td>Sync</td><td class="rng">Off / Stretch / Repitch</td><td class="rng">Off</td><td></td></tr>
     <tr><td>Clock div</td><td class="rng">Auto … 1 bar</td><td class="rng">Auto</td><td></td></tr>
-    <tr><td>Step mode</td><td class="rng">5 modes</td><td class="rng">Forward</td><td></td></tr>
-    <tr><td>Random mode</td><td class="rng">Free / Beat</td><td class="rng">Free</td><td></td></tr>
+    <tr><td>Step mode</td><td class="rng">6 modes</td><td class="rng">Forward</td><td>Forward, Reverse, PingPong, Walk, Shuffle, Pattern.</td></tr>
+    <tr><td>Pattern</td><td class="rng">4 templates</td><td class="rng">Boom-bap</td><td>Boom-bap, 4-floor, Two-step, Half-time. Grey unless Step mode = Pattern.</td></tr>
+    <tr><td>Random mode</td><td class="rng">Free / Beat / Role</td><td class="rng">Free</td><td></td></tr>
     <tr><td>Ratchet div</td><td class="rng">1/1 … 1/8</td><td class="rng">1/4</td><td></td></tr>
     <tr><td>MIDI channel</td><td class="rng">Omni / 1–16</td><td class="rng">Omni</td><td></td></tr>
     <tr class="grp"><td colspan="4">FX</td></tr>
@@ -473,16 +517,26 @@
     <tr><td>Blend mode</td><td class="rng">Chance / Xfade</td><td class="rng">Chance</td><td></td></tr>
     <tr><td>Quarrel</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Blend random walk.</td></tr>
     <tr><td>Break</td><td class="rng">0 … 100 %</td><td class="rng">50</td><td>Probability macro.</td></tr>
+    <tr><td>Backbeat</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Suppresses dice on downbeats as it rises.</td></tr>
     <tr class="grp"><td colspan="4">FX setup</td></tr>
     <tr><td>Pitch amount</td><td class="rng">1 … 24 st</td><td class="rng">12</td><td></td></tr>
     <tr><td>Stutter div</td><td class="rng">1/2 … 1/16 / Random</td><td class="rng">Random</td><td></td></tr>
     <tr><td>Stretch amount</td><td class="rng">110 … 400 %</td><td class="rng">200</td><td></td></tr>
     <tr><td>Crush</td><td class="rng">0 … 100</td><td class="rng">0</td><td>50 = SP-1200.</td></tr>
     <tr><td>Drive</td><td class="rng">0 … 100</td><td class="rng">0</td><td>Soft clip + makeup.</td></tr>
+    <tr><td>LPG</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Low-pass gate depth. 0 = off.</td></tr>
+    <tr><td>LPG decay</td><td class="rng">0 … 100 %</td><td class="rng">30</td><td>Short pluck … full-slice length.</td></tr>
+    <tr><td>LPG res</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td></td></tr>
+    <tr class="grp"><td colspan="4">Beef (each of 5 roles)</td></tr>
+    <tr><td>Beef folder</td><td class="rng">—</td><td class="rng">—</td><td>Shared across all five roles.</td></tr>
+    <tr><td>Sample</td><td class="rng">None / file</td><td class="rng">None</td><td>Kick, Snare, Perc, Hat, Crash.</td></tr>
+    <tr><td>Level</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>0 = role off.</td></tr>
+    <tr><td>Duck</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Ducks the original slice, envelope-linked.</td></tr>
     <tr class="grp"><td colspan="4">Routing</td></tr>
     <tr><td>Output L / R</td><td class="rng">bus</td><td class="rng">13 / 14</td><td>Add or replace.</td></tr>
     <tr><td>Level</td><td class="rng">−40 … +6 dB</td><td class="rng">0</td><td>Master, slewed.</td></tr>
   </table></div>
+  <p class="soft">Two specifications are chosen when you add the algorithm: <code>Max length</code> (1–32 s, default 8 s, per loop) and <code>Beef length</code> (1–8 s, default 2 s, per one-shot slot). Changing either means re-adding the algorithm.</p>
 </section>
 
 <section id="tips">
@@ -493,6 +547,9 @@
     <li class="soft"><b style="color:var(--ink)">Gate the dice.</b> Map Reverse or Stutter probability to a manual gate at 0/100 for zeptocore-style punch-ins.</li>
     <li class="soft"><b style="color:var(--ink)">Two breaks, one tempo.</b> Trim Goat's Rate to match Lion's feel, then let Blend Chance at ~30 % swap hits between them.</li>
     <li class="soft"><b style="color:var(--ink)">Ratchet + Break.</b> Hold a ratchet gate while sweeping Break up — instant fill, ends exactly on the next tick.</li>
+    <li class="soft"><b style="color:var(--ink)">Tag first, then Pattern.</b> Role tags do nothing until something reads them — tag a break's kicks/snares/hats before reaching for Random Role or Step mode Pattern, or you'll just get random slices.</li>
+    <li class="soft"><b style="color:var(--ink)">Beef without surprises.</b> Level and Sample both default to off, so dropping in a new Beef folder never changes an existing preset's sound until you raise a role's Level yourself.</li>
+    <li class="soft"><b style="color:var(--ink)">Backbeat + dice.</b> Push Backbeat toward 100 to keep 1 &amp; 3 dead straight while the dice run wild on 2 &amp; 4 — a groove that stays recognisable no matter how hot the FX get.</li>
     <li class="soft"><b style="color:var(--ink)">CPU.</b> Light: roughly 2–3 % typical, ~5 % worst case (Xfade, all dice hot, drive and crush on). A brief analysis burst follows each sample load.</li>
   </ul>
 </section>
@@ -710,21 +767,30 @@
       var hit=(i%32)<3?1:((i%16)<2?0.7:0.28);
       return Math.abs(v)*hit;
     }
-    function strip(top,bottom,seed,label){
+    // outlined label: 1px black halo (matches the module's own drawOutlinedText)
+    function outlinedText(x,y,label,colour){
+      ctx.font='6px monospace'; ctx.textAlign='center';
+      ctx.fillStyle='#000';
+      for(var dx=-1;dx<=1;dx++) for(var dy=-1;dy<=1;dy++)
+        if(dx||dy) ctx.fillText(label,x+dx,y+dy);
+      ctx.fillStyle=colour;
+      ctx.fillText(label,x,y);
+    }
+    function strip(top,bottom,seed,label,dim){
       var mid=(top+bottom)>>1, half=(bottom-top)>>1;
-      ctx.fillStyle='#666';
+      var grey=Math.round(0x66*dim+0x18);
+      ctx.fillStyle='rgb('+grey+','+grey+','+grey+')';
       for(var b=0;b<128;b++){
         var h=Math.max(1,Math.round(amp(b,seed)*half));
         ctx.fillRect(b*2,mid-h,1,h*2);
       }
       ctx.fillStyle='#999';
       for(var s=1;s<16;s++){ ctx.fillRect(s*16,top,1,bottom-top); }
-      // label, tiny pixel text
-      ctx.font='6px monospace'; ctx.fillStyle='#555'; ctx.textAlign='right';
-      ctx.fillText(label,254,top+7);
+      outlinedText(128,mid+2,label,'#ddd');
     }
-    strip(15,37,1.3,'LION');
-    strip(40,62,4.8,'GOAT');
+    // Xfade blend: Lion dimmer (quieter in the crossfade), Goat near full
+    strip(15,37,1.3,'LION',0.4);
+    strip(40,62,4.8,'GOAT',0.95);
     // current slice highlight on Lion: slice 5 => x 64..80
     ctx.fillStyle='#fff';
     ctx.fillRect(64,15,16,2);
@@ -732,9 +798,7 @@
     // lock flag on slice 1
     ctx.font='6px monospace'; ctx.textAlign='left'; ctx.fillStyle='#bbb';
     ctx.fillText('L',2,21);
-    // status text
-    ctx.textAlign='right'; ctx.fillStyle='#888';
-    ctx.fillText('Lion S5 b2.1',254,12);
+    // tempo, top-left; nothing top-right (clear of the host's own status icon)
     ctx.textAlign='left'; ctx.fillStyle='#666';
     ctx.fillText('174>172.3',1,12);
   }
