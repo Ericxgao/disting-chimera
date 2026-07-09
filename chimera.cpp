@@ -183,6 +183,8 @@ enum
 	kParamGoatPitch,
 	kParamGoatFilter,
 
+	kParamBackbeat,
+
 	kNumParams,
 };
 
@@ -265,6 +267,8 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Goat rate", .min = 25, .max = 400, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Goat pitch", .min = -24, .max = 24, .def = 0, .unit = kNT_unitSemitones, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Goat filter", .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "Backbeat", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
 static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamBars };
@@ -272,7 +276,7 @@ static const uint8_t pageLion[] = { kParamFolder, kParamSample, kParamLionLevel,
 static const uint8_t pageGoat[] = { kParamFolderB, kParamSampleB, kParamGoatLevel, kParamGoatRate, kParamGoatPitch, kParamGoatFilter };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
 static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
-static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak };
+static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak, kParamBackbeat };
 static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
 
@@ -405,6 +409,7 @@ struct _breakSlicer : public _NT_algorithm
 	// triggering
 	bool			trigArmed, randArmed, clockArmed, resetArmed;
 	int				seqStep;
+	int				stepPhase;			// rhythmic grid position since Reset (for Backbeat)
 	int				lastSlice;			// most recently triggered slice
 	int				ppDir;				// ping-pong direction
 	int				shufflePos;
@@ -936,13 +941,42 @@ struct FxRolls
 	float	filtC0, filtC1;		// SVF coefficient sweep endpoints
 };
 
-static void rollFx( _breakSlicer* pThis, FxRolls& r )
+// Backbeat weight for the effect dice, applied on top of the Break macro.
+// gridPos is the rhythmic grid position (0-based slice) the event lands on.
+// At Backbeat 0 every event weighs 1.0 (unchanged). As it rises, downbeats
+// (odd beats: 1 & 3 in 4/4) are attenuated toward zero, so at 100% the dice
+// only roll on backbeats (even beats: 2 & 4) and downbeats always play straight.
+static float backbeatWeight( _breakSlicer* pThis, int gridPos )
+{
+	int bb = pThis->v[ kParamBackbeat ];
+	if ( bb <= 0 )
+		return 1.0f;
+
+	int n = canonicalSlices( pThis );
+	if ( n < 1 )
+		return 1.0f;
+	int beats = ( pThis->v[ kParamBars ] + 1 ) * 4;		// 4/4 assumed
+	int spb = n / beats;								// slices per beat
+	if ( spb < 1 )
+		spb = 1;
+	if ( gridPos < 0 )
+		gridPos = 0;
+	int beat = ( gridPos / spb ) % beats;				// 0-based beat in the bar
+	bool backbeat = ( beat & 1 );						// beats 2 & 4 (0-based 1,3)
+	if ( backbeat )
+		return 1.0f;
+	return 1.0f - bb / 100.0f;							// suppress downbeats
+}
+
+// weight scales all dice equally (Serpent included) so the whole beast leans
+// on the backbeat, not just one effect.
+static void rollFx( _breakSlicer* pThis, FxRolls& r, float weight )
 {
 	const int16_t* pv = pThis->v;
 
 	// Break macro scales all probabilities: 50 = as set, 0 = all off, 100 = doubled.
-	// A held Tame button silences all the dice.
-	float scale = pThis->tamed ? 0.0f : pv[ kParamBreak ] / 50.0f;
+	// A held Tame button silences all the dice. Backbeat weight biases per event.
+	float scale = pThis->tamed ? 0.0f : ( pv[ kParamBreak ] / 50.0f ) * weight;
 	r.rev     = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamReverse ] * scale;
 	r.up      = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchUp ] * scale;
 	r.down    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchDown ] * scale;
@@ -1130,12 +1164,15 @@ static float effectiveBlend( _breakSlicer* pThis )
 	return b;
 }
 
-static void triggerSlice( _breakSlicer* pThis, int idx )
+// idx is the slice to play; gridPos is the rhythmic position used for the
+// Backbeat weighting (the step phase for clock-driven stepping, the slice's
+// own index for CV / MIDI / Random triggers).
+static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos )
 {
 	const int16_t* pv = pThis->v;
 
 	FxRolls rolls;
-	rollFx( pThis, rolls );
+	rollFx( pThis, rolls, backbeatWeight( pThis, gridPos ) );
 
 	bool twoLoops = pv[ kParamLoops ] && pThis->loops[1].sliced;
 
@@ -1245,6 +1282,18 @@ static int nextStep( _breakSlicer* pThis )
 	return idx;
 }
 
+// clock-driven step: play the next sequenced slice, weighting the Backbeat by
+// the rhythmic phase since Reset (so Walk/Shuffle still lean on beats 2 & 4).
+static void triggerStep( _breakSlicer* pThis )
+{
+	int n = canonicalSlices( pThis );
+	if ( n < 1 )
+		n = 1;
+	int gridPos = pThis->stepPhase % n;
+	triggerSlice( pThis, nextStep( pThis ), gridPos );
+	pThis->stepPhase = ( pThis->stepPhase + 1 ) % n;
+}
+
 // ---------------------------------------------------------------------------
 // MIDI: notes from 36 (C1) upwards trigger slices directly
 
@@ -1260,7 +1309,7 @@ void	midiMessage( _NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byt
 
 	int idx = (int)byte1 - 36;
 	if ( idx >= 0 && idx < canonicalSlices( pThis ) )
-		triggerSlice( pThis, idx );
+		triggerSlice( pThis, idx, idx );		// MIDI note: slice's own position
 }
 
 // ---------------------------------------------------------------------------
@@ -1570,6 +1619,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		if ( resetBus && risingEdge( resetBus[i], pThis->resetArmed ) )
 		{
 			pThis->seqStep = 0;
+			pThis->stepPhase = 0;
 			pThis->ppDir = 1;
 			pThis->shufflePos = 0;
 			pThis->permN = 0;		// force a fresh shuffle
@@ -1591,16 +1641,19 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 				}
 				else
 					idx = (int)( cv * ( canonicalSlices( pThis ) / 5.0f ) );
-				triggerSlice( pThis, idx );
+				triggerSlice( pThis, idx, idx );	// CV-addressed: own position
 			}
 			else
 			{
 				// no Select CV: triggers follow the step mode, like Clock
-				triggerSlice( pThis, nextStep( pThis ) );
+				triggerStep( pThis );
 			}
 		}
 		if ( randBus && risingEdge( randBus[i], pThis->randArmed ) )
-			triggerSlice( pThis, randomSlice( pThis ) );
+		{
+			int idx = randomSlice( pThis );
+			triggerSlice( pThis, idx, idx );		// random: own position
+		}
 		pThis->framesSinceClock++;
 		if ( clockBus && risingEdge( clockBus[i], pThis->clockArmed ) )
 		{
@@ -1610,7 +1663,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 			if ( elapsed >= NT_globals.sampleRate / 20 && elapsed <= NT_globals.sampleRate * 4 )
 				pThis->clockPeriod = (float)elapsed;
 
-			triggerSlice( pThis, nextStep( pThis ) );
+			triggerStep( pThis );
 		}
 		if ( ratchetBus )
 		{
@@ -1623,7 +1676,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 					: NT_globals.sampleRate / 8.0f;
 				if ( !pThis->ratchetHigh )
 				{
-					triggerSlice( pThis, pThis->lastSlice );
+					triggerSlice( pThis, pThis->lastSlice, pThis->lastSlice );
 					pThis->ratchetTimer = interval;
 				}
 				else
@@ -1631,7 +1684,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 					pThis->ratchetTimer -= 1.0f;
 					if ( pThis->ratchetTimer <= 0.0f )
 					{
-						triggerSlice( pThis, pThis->lastSlice );
+						triggerSlice( pThis, pThis->lastSlice, pThis->lastSlice );
 						pThis->ratchetTimer += interval;
 					}
 				}
