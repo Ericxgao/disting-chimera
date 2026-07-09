@@ -11,15 +11,23 @@
  * Triggering:
  *   Select CV in (0-5V -> slice index, or 1V/oct note -> slice index with
  *   an adjustable root note) sampled on Trigger in rising edge
- *   Random in     -> plays a random slice (Free, or Beat: groove-preserving)
- *   Clock in      -> steps through slices (forward/reverse/pingpong/walk/shuffle)
+ *   Random in     -> plays a random slice (Free; Beat: groove-preserving;
+ *                    Role: picks a slice tagged for the grid position's role)
+ *   Clock in      -> steps through slices (forward/reverse/pingpong/walk/
+ *                    shuffle, or Pattern: a groove template of role tags)
  *   Reset in      -> stepping back to slice 1
  *   Ratchet in    -> gate held retrigs current slice at a clock subdivision
  *   MIDI notes from C1 (36) play slices directly
+ *   MIDI clock    -> tempo + transport-driven stepping (if no analog Clock)
  *
  * Two-loop intermingle:
  *   Blend sets the probability that a slice event draws from loop B
  *   instead of loop A (same slice index, other break).
+ *
+ * Per-loop trims (Lion / Goat pages):
+ *   level, rate (varispeed %), pitch (semitones) and a bipolar filter
+ *   (negative = low-pass, positive = high-pass) applied to each voice
+ *   before the per-event effect dice, to match unlike breaks.
  *
  * Effects (rolled per slice event, amen style):
  *   each has a 0-100% probability parameter; map it to a fader for
@@ -31,6 +39,8 @@
  * Clock sync:
  *   Filename convention "name_<bpm>.wav" gives the loop tempo; slices
  *   then conform to the measured clock (granular Stretch or Repitch).
+ *   The clock is either the analog Clock input or incoming MIDI clock
+ *   (24 PPQN); the analog input wins when both are present.
  */
 
 #include <math.h>
@@ -58,6 +68,21 @@ enum
 
 static const float kTrigHi = 1.0f;		// volts, rising edge threshold
 static const float kTrigLo = 0.5f;		// volts, re-arm threshold
+
+// per-slice drum-role tags (3 bits), for pattern-aware playback
+enum
+{
+	kRoleNone = 0,
+	kRoleKick,
+	kRoleSnare,
+	kRolePerc,
+	kRoleHat,
+	kRoleCrash,
+	kNumRoles,
+};
+
+// display initial per role ('\0' = untagged, nothing drawn)
+static const char kRoleInitials[ kNumRoles ] = { 0, 'K', 'S', 'P', 'H', 'C' };
 
 // ---------------------------------------------------------------------------
 // (a*b)/c in 64-bit, without __aeabi_uldivmod (firmware doesn't export libgcc
@@ -168,6 +193,24 @@ enum
 	kParamSelectMode,
 	kParamSelectOffset,
 
+	// per-loop pre-fx trims (appended so older presets still load)
+	kParamLionLevel,
+	kParamLionRate,
+	kParamLionPitch,
+	kParamLionFilter,
+	kParamGoatLevel,
+	kParamGoatRate,
+	kParamGoatPitch,
+	kParamGoatFilter,
+
+	kParamBackbeat,
+
+	kParamLpg,
+	kParamLpgDecay,
+	kParamLpgRes,
+
+	kParamPattern,
+
 	kNumParams,
 };
 
@@ -184,8 +227,29 @@ static const char* const clockDivStrings[] = { "Auto", "1/32", "1/16", "1/8", "1
 static const float clockDivQuarters[] = { 1.0f, 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
 
 static const char* const selectModeStrings[] = { "Linear", "1V/Oct" };
-static const char* const stepModeStrings[] = { "Forward", "Reverse", "PingPong", "Walk", "Shuffle" };
-static const char* const randomModeStrings[] = { "Free", "Beat" };
+static const char* const stepModeStrings[] = { "Forward", "Reverse", "PingPong", "Walk", "Shuffle", "Pattern" };
+static const char* const randomModeStrings[] = { "Free", "Beat", "Role" };
+
+// Pattern step mode: classic groove templates mapping the 16 sixteenth-note
+// slots of a bar to a drum role. Pattern mode picks a random slice of the
+// slot's role (falling back to any slice when that tag pool is empty), so a
+// tagged break reassembles into the groove. Blend/Break/dice still apply.
+enum { kPatBoomBap, kPatFourFloor, kPatTwoStep, kPatHalfTime, kNumPatterns };
+static const char* const patternStrings[] = { "Boom-bap", "4-floor", "Two-step", "Half-time" };
+static const uint8_t patternTable[ kNumPatterns ][ 16 ] = {
+	// Boom-bap: kick on 1 and the "and" of 3, snare on 2 & 4, hats between
+	{ kRoleKick,  kRoleHat, kRoleHat, kRoleHat,   kRoleSnare, kRoleHat, kRoleHat, kRoleHat,
+	  kRoleHat,   kRoleHat, kRoleKick, kRoleHat,  kRoleSnare, kRoleHat, kRoleKick, kRoleHat },
+	// Four-on-the-floor: kick every quarter, hats on the offbeat eighths
+	{ kRoleKick,  kRoleHat, kRoleHat, kRoleHat,   kRoleKick,  kRoleHat, kRoleHat, kRoleHat,
+	  kRoleKick,  kRoleHat, kRoleHat, kRoleHat,   kRoleKick,  kRoleHat, kRoleHat, kRoleHat },
+	// DnB two-step: kick on 1, snare on 3, sparse ghost kick, hats between
+	{ kRoleKick,  kRoleHat, kRoleHat, kRoleHat,   kRoleHat,   kRoleHat, kRoleHat, kRoleHat,
+	  kRoleSnare, kRoleHat, kRoleKick, kRoleHat,  kRoleHat,   kRoleHat, kRoleSnare, kRoleHat },
+	// Half-time: kick on 1, snare on 3 only, lots of space (perc fills)
+	{ kRoleKick,  kRolePerc, kRoleHat, kRolePerc, kRolePerc,  kRolePerc, kRoleHat, kRolePerc,
+	  kRoleSnare, kRolePerc, kRoleHat, kRolePerc, kRolePerc,  kRolePerc, kRoleHat, kRolePerc },
+};
 static const char* const ratchetDivStrings[] = { "1/1", "1/2", "1/3", "1/4", "1/8" };
 static const float ratchetDivValues[] = { 1.0f, 2.0f, 3.0f, 4.0f, 8.0f };
 static const char* const midiChannelStrings[] = {
@@ -215,8 +279,8 @@ static const _NT_parameter parameters[] = {
 
 	{ .name = "Sync", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = syncModeStrings },
 	{ .name = "Clock div", .min = 0, .max = 6, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = clockDivStrings },
-	{ .name = "Step mode", .min = 0, .max = 4, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stepModeStrings },
-	{ .name = "Random mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = randomModeStrings },
+	{ .name = "Step mode", .min = 0, .max = 5, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stepModeStrings },
+	{ .name = "Random mode", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = randomModeStrings },
 	{ .name = "Ratchet div", .min = 0, .max = 4, .def = 3, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = ratchetDivStrings },
 	{ .name = "MIDI channel", .min = 0, .max = 16, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = midiChannelStrings },
 
@@ -241,17 +305,38 @@ static const _NT_parameter parameters[] = {
 
 	{ .name = "Select mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = selectModeStrings },
 	{ .name = "Select offset", .min = 0, .max = 127, .def = 36, .unit = kNT_unitMIDINote, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "Lion level", .min = -40, .max = 6, .def = 0, .unit = kNT_unitDb, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Lion rate", .min = 25, .max = 400, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Lion pitch", .min = -24, .max = 24, .def = 0, .unit = kNT_unitSemitones, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Lion filter", .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Goat level", .min = -40, .max = 6, .def = 0, .unit = kNT_unitDb, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Goat rate", .min = 25, .max = 400, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Goat pitch", .min = -24, .max = 24, .def = 0, .unit = kNT_unitSemitones, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Goat filter", .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "Backbeat", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "LPG", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "LPG decay", .min = 0, .max = 100, .def = 30, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "LPG res", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "Pattern", .min = 0, .max = kNumPatterns - 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = patternStrings },
 };
 
-static const uint8_t pageSample[] = { kParamLoops, kParamFolder, kParamSample, kParamFolderB, kParamSampleB, kParamSlices, kParamSliceMode, kParamBars };
+static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamBars };
+static const uint8_t pageLion[] = { kParamFolder, kParamSample, kParamLionLevel, kParamLionRate, kParamLionPitch, kParamLionFilter };
+static const uint8_t pageGoat[] = { kParamFolderB, kParamSampleB, kParamGoatLevel, kParamGoatRate, kParamGoatPitch, kParamGoatFilter };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
-static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
-static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak };
-static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive };
+static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamPattern, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
+static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak, kParamBackbeat };
+static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive, kParamLpg, kParamLpgDecay, kParamLpgRes };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
 
 static const _NT_parameterPage pages[] = {
 	{ .name = "Sample", .numParams = ARRAY_SIZE(pageSample), .params = pageSample },
+	{ .name = "Lion", .numParams = ARRAY_SIZE(pageLion), .params = pageLion },
+	{ .name = "Goat", .numParams = ARRAY_SIZE(pageGoat), .params = pageGoat },
 	{ .name = "Triggers", .numParams = ARRAY_SIZE(pageTriggers), .params = pageTriggers },
 	{ .name = "Sequence", .numParams = ARRAY_SIZE(pageSeq), .params = pageSeq },
 	{ .name = "FX", .numParams = ARRAY_SIZE(pageFx), .params = pageFx },
@@ -311,6 +396,17 @@ struct Voice
 	float		fCoef;			// current frequency coefficient
 	float		fCoefStep;		// per-frame sweep
 	float		svLowL, svBandL, svLowR, svBandR;
+
+	// per-slice low-pass gate (vactrol-style), a second SVF stage struck on
+	// the slice event: env drives cutoff and (skewed) output amplitude together
+	uint8_t		lpgActive;
+	float		lpgEnv;			// 1.0 at strike, decays toward 0
+	float		lpgDecayCoef;	// per-frame multiplier for the decay
+	float		lpgDepth;		// 0..1 dry/gated blend
+	float		lpgDamp;		// SVF damping from resonance
+	float		lpgCoefMin;		// cutoff coef at env 0 (closed)
+	float		lpgCoefMax;		// cutoff coef at env 1 (open)
+	float		lpgLowL, lpgBandL, lpgLowR, lpgBandR;
 };
 
 static const float kFilterDamp = 0.5f;	// SVF damping (some resonance)
@@ -343,6 +439,7 @@ struct Loop
 	int			numSlices;
 	bool		manualSlices;	// user-moved points; auto re-slice won't clobber
 	uint32_t	lockMask;		// locked slice always plays straight
+	uint8_t		sliceRole[ kMaxSlices ];	// drum-role tag per slice (kRole*)
 
 	// manual points restored from a preset, waiting for the sample to load
 	bool		havePending;
@@ -377,6 +474,8 @@ struct _breakSlicer : public _NT_algorithm
 	// triggering
 	bool			trigArmed, randArmed, clockArmed, resetArmed;
 	int				seqStep;
+	int				stepPhase;			// rhythmic grid position since Reset (for Backbeat)
+	int				roleRandomPhase;	// groove-slot scan for Role random mode
 	int				lastSlice;			// most recently triggered slice
 	int				ppDir;				// ping-pong direction
 	int				shufflePos;
@@ -397,6 +496,13 @@ struct _breakSlicer : public _NT_algorithm
 	float			drivePre;			// input gain into the shaper
 	float			driveMakeup;
 
+	// low-pass gate (per-slice, precomputed from the LPG params)
+	float			lpgDepth;			// 0..1, 0 = off
+	float			lpgDamp;			// SVF damping from LPG res
+	float			lpgCoefMin;			// cutoff coef, gate closed
+	float			lpgCoefMax;			// cutoff coef, gate open
+	float			lpgDecayFrac;		// 0..1 -> short..full-slice decay
+
 	// serpent (dub delay tail)
 	float*			echo;				// DRAM: stereo interleaved ring buffer
 	uint32_t		echoPos;
@@ -413,6 +519,13 @@ struct _breakSlicer : public _NT_algorithm
 	float			clockPeriod;		// output frames per clock tick, 0 = unknown
 	uint32_t		framesSinceClock;
 
+	// MIDI clock (24 PPQN) as an alternative to the analog Clock input
+	uint32_t		frameClock;			// free-running per-frame counter
+	uint32_t		midiTickCount;		// ticks toward the next quarter measurement
+	uint32_t		midiLastQuarterFrame;	// frameClock at the last quarter boundary
+	uint32_t		midiStepTicks;		// ticks toward the next sequence step
+	bool			midiRunning;		// transport state (Start/Continue vs Stop)
+
 	// slice editor
 	bool			editMode;
 	int				editLoop;
@@ -422,6 +535,13 @@ struct _breakSlicer : public _NT_algorithm
 	// cached parameter values
 	float			gain, gainTarget;
 	float			pitchUpFactor, pitchDownFactor;
+
+	// per-loop pre-fx trims
+	float			loopGain[ kNumLoops ], loopGainTarget[ kNumLoops ];
+	float			loopSpeed[ kNumLoops ];		// rate param, as a factor
+	float			loopTune[ kNumLoops ];		// pitch param, as a factor
+	uint8_t			loopFType[ kNumLoops ];		// 0 none, 1 LP, 2 HP
+	float			loopFCoef[ kNumLoops ];		// SVF frequency coefficient
 
 	Voice			cur, fade;		// primary layer (chance mode; loop A in xfade)
 	Voice			curB, fadeB;	// second layer, used only in xfade blend mode
@@ -603,6 +723,12 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 	alg->gain = alg->gainTarget = 1.0f;
 	alg->pitchUpFactor = 2.0f;
 	alg->pitchDownFactor = 0.5f;
+	for ( int li=0; li<kNumLoops; ++li )
+	{
+		alg->loopGain[li] = alg->loopGainTarget[li] = 1.0f;
+		alg->loopSpeed[li] = 1.0f;
+		alg->loopTune[li] = 1.0f;
+	}
 	alg->trigArmed = alg->randArmed = alg->clockArmed = alg->resetArmed = true;
 	alg->ppDir = 1;
 	alg->rng.seed( 0xBEA7BEA7u );
@@ -748,10 +874,34 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	uint32_t off = NT_parameterOffset();
 	NT_setParameterGrayedOut( algIdx, kParamFolderB + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamSampleB + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamGoatLevel + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamGoatRate + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamGoatPitch + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamGoatFilter + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamBlend + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamBlendMode + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamQuarrel + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamSelectOffset + off, pThis->v[ kParamSelectMode ] == 0 );
+	NT_setParameterGrayedOut( algIdx, kParamPattern + off, pThis->v[ kParamStepMode ] != 5 );
+}
+
+// recompute the low-pass gate coefficients from the three LPG params
+static void updateLpg( _breakSlicer* pThis )
+{
+	pThis->lpgDepth = pThis->v[ kParamLpg ] / 100.0f;
+
+	// resonance lowers the SVF damping; the floor keeps hard settings ringing
+	// hard (pinged-filter kicks) without the state exploding
+	float res = pThis->v[ kParamLpgRes ] / 100.0f;
+	pThis->lpgDamp = 1.4f - 1.3f * res;			// 1.4 (none) .. 0.1 (pinged)
+
+	// cutoff sweep: gate closed ~120Hz, open ~9kHz (coef clamped for stability)
+	float k = 6.2831853f / (float)NT_globals.sampleRate;
+	pThis->lpgCoefMin = 2.0f * sinf( 0.5f * k * 120.0f );
+	float cMax = 2.0f * sinf( 0.5f * k * 9000.0f );
+	pThis->lpgCoefMax = ( cMax > 1.0f ) ? 1.0f : cMax;
+
+	pThis->lpgDecayFrac = pThis->v[ kParamLpgDecay ] / 100.0f;
 }
 
 void	parameterChanged( _NT_algorithm* self, int p )
@@ -760,6 +910,11 @@ void	parameterChanged( _NT_algorithm* self, int p )
 
 	switch ( p )
 	{
+	case kParamLpg:
+	case kParamLpgDecay:
+	case kParamLpgRes:
+		updateLpg( pThis );
+		break;
 	case kParamLoops:
 		updateGrayedOut( pThis );
 		if ( pThis->v[ kParamLoops ] && !pThis->loops[1].loaded )
@@ -768,6 +923,7 @@ void	parameterChanged( _NT_algorithm* self, int p )
 			pThis->editLoop = 0;
 		break;
 	case kParamSelectMode:
+	case kParamStepMode:
 		updateGrayedOut( pThis );
 		break;
 	case kParamFolder:
@@ -827,6 +983,46 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		pThis->driveMakeup = 1.0f / sqrtf( pThis->drivePre );
 	}
 		break;
+	case kParamLionLevel:
+	case kParamGoatLevel:
+	{
+		int li = ( p == kParamGoatLevel );
+		pThis->loopGainTarget[li] = powf( 10.0f, pThis->v[p] / 20.0f );
+	}
+		break;
+	case kParamLionRate:
+	case kParamGoatRate:
+	{
+		int li = ( p == kParamGoatRate );
+		pThis->loopSpeed[li] = pThis->v[p] / 100.0f;
+	}
+		break;
+	case kParamLionPitch:
+	case kParamGoatPitch:
+	{
+		int li = ( p == kParamGoatPitch );
+		pThis->loopTune[li] = powf( 2.0f, pThis->v[p] / 12.0f );
+	}
+		break;
+	case kParamLionFilter:
+	case kParamGoatFilter:
+	{
+		int li = ( p == kParamGoatFilter );
+		int fv = pThis->v[p];
+		if ( !fv )
+			pThis->loopFType[li] = 0;
+		else
+		{
+			// negative: LP 18kHz -> 150Hz; positive: HP 20Hz -> 6kHz (log)
+			float t = ( ( fv < 0 ) ? -fv : fv ) / 100.0f;
+			float hz = ( fv < 0 ) ? 18000.0f * expf( -4.7875f * t )
+								  : 20.0f * expf( 5.7038f * t );
+			pThis->loopFType[li] = ( fv < 0 ) ? 1 : 2;
+			float k = 6.2831853f / (float)NT_globals.sampleRate;
+			pThis->loopFCoef[li] = 2.0f * sinf( 0.5f * k * hz );
+		}
+	}
+		break;
 	}
 }
 
@@ -851,13 +1047,43 @@ struct FxRolls
 	float	filtC0, filtC1;		// SVF coefficient sweep endpoints
 };
 
-static void rollFx( _breakSlicer* pThis, FxRolls& r )
+// Backbeat weight for the effect dice, applied on top of the Break macro.
+// gridPos is the rhythmic grid position (0-based slice) the event lands on.
+// At Backbeat 0 every event weighs 1.0 (unchanged). As it rises, downbeats
+// (odd beats: 1 & 3 in 4/4) are attenuated toward zero, so at 100% the dice
+// only roll on backbeats (even beats: 2 & 4) and downbeats always play straight.
+static float backbeatWeight( _breakSlicer* pThis, int gridPos )
+{
+	int bb = pThis->v[ kParamBackbeat ];
+	if ( bb <= 0 )
+		return 1.0f;
+
+	int n = canonicalSlices( pThis );
+	if ( n < 1 )
+		return 1.0f;
+	if ( gridPos < 0 )
+		gridPos = 0;
+	if ( gridPos >= n )
+		gridPos = n - 1;							// CV can address one past the end
+	int beats = ( pThis->v[ kParamBars ] + 1 ) * 4;		// 4/4 assumed
+	// proportional so sparse grids (e.g. 4 slices over 2 bars) land on the
+	// right beats, not just the first few
+	int beat = ( gridPos * beats ) / n;					// 0-based beat in the bar(s)
+	bool backbeat = ( beat & 1 );						// beats 2 & 4 (0-based 1,3)
+	if ( backbeat )
+		return 1.0f;
+	return 1.0f - bb / 100.0f;							// suppress downbeats
+}
+
+// weight scales all dice equally (Serpent included) so the whole beast leans
+// on the backbeat, not just one effect.
+static void rollFx( _breakSlicer* pThis, FxRolls& r, float weight )
 {
 	const int16_t* pv = pThis->v;
 
 	// Break macro scales all probabilities: 50 = as set, 0 = all off, 100 = doubled.
-	// A held Tame button silences all the dice.
-	float scale = pThis->tamed ? 0.0f : pv[ kParamBreak ] / 50.0f;
+	// A held Tame button silences all the dice. Backbeat weight biases per event.
+	float scale = pThis->tamed ? 0.0f : ( pv[ kParamBreak ] / 50.0f ) * weight;
 	r.rev     = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamReverse ] * scale;
 	r.up      = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchUp ] * scale;
 	r.down    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchDown ] * scale;
@@ -912,9 +1138,10 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 
 	Voice& v = voice;
 	memset( &v, 0, sizeof(Voice) );
+	int li = (int)( lp - pThis->loops );
 	v.active = 1;
 	v.sliceIdx = (int8_t)idx;
-	v.loopIdx = (uint8_t)( lp - pThis->loops );
+	v.loopIdx = (uint8_t)li;
 	v.buf = lp->sample;
 	v.bufFrames = lp->numFrames;
 	v.start = start;
@@ -939,7 +1166,8 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 		pitch = pThis->pitchDownFactor;
 
 	v.dir = rev ? -1.0f : 1.0f;
-	v.rate = lp->srRatio * pitch;
+	// per-loop rate and tune trims apply under the fx pitch dice
+	v.rate = lp->srRatio * pitch * pThis->loopSpeed[ li ] * pThis->loopTune[ li ];
 	v.pos = rev ? (float)( end - 1 ) : (float)start;
 
 	// clock sync: conform slice duration to the measured clock
@@ -953,7 +1181,8 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 			// known file tempo: uniform ratio, preserves groove with uneven slices
 			int div = pv[ kParamClockDiv ];
 			float clockBpm = 60.0f * NT_globals.sampleRate * clockDivQuarters[ div ] / pThis->clockPeriod;
-			f = lp->fileBpm / clockBpm;
+			// rate trim shifts the loop's effective tempo (tune stays free)
+			f = lp->fileBpm * pThis->loopSpeed[ li ] / clockBpm;
 			if ( div == 0 )
 			{
 				// Auto: octave-normalise so any power-of-two clock division works
@@ -1024,6 +1253,36 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 		float fl = ( v.framesLeft > 1.0f ) ? v.framesLeft : 1.0f;
 		v.fCoefStep = ( rolls.filtC1 - rolls.filtC0 ) / fl;
 	}
+	else if ( pThis->loopFType[ li ] )
+	{
+		// static per-loop tone filter (the fx sweep takes over when it fires)
+		v.fType = pThis->loopFType[ li ];
+		v.fCoef = pThis->loopFCoef[ li ];
+		v.fCoefStep = 0.0f;
+	}
+
+	// low-pass gate: struck fresh on every slice event, always-on character
+	// (not a die), so it ignores locks. Latch the globals so renderVoice stays
+	// parameter-free; decay is per-strike because it follows the slice length.
+	if ( pThis->lpgDepth > 0.0f )
+	{
+		v.lpgActive = 1;
+		v.lpgEnv = 1.0f;
+		v.lpgDepth = pThis->lpgDepth;
+		v.lpgDamp = pThis->lpgDamp;
+		v.lpgCoefMin = pThis->lpgCoefMin;
+		v.lpgCoefMax = pThis->lpgCoefMax;
+
+		// decay time: ~20ms up to the final slice duration, +/-10% per strike
+		// (vactrol component drift, so runs of slices don't sound identical)
+		float minF = 0.02f * (float)NT_globals.sampleRate;
+		float slice = ( v.framesLeft > minF ) ? v.framesLeft : minF;
+		float t = minF + pThis->lpgDecayFrac * ( slice - minF );
+		t *= 0.9f + 0.2f * pThis->rng.uniform();
+		if ( t < 1.0f )
+			t = 1.0f;
+		v.lpgDecayCoef = expf( -3.5f / t );		// env ~0.03 after t frames
+	}
 }
 
 // Blend with the Quarrel wander applied (the heads fight over the fader)
@@ -1035,12 +1294,15 @@ static float effectiveBlend( _breakSlicer* pThis )
 	return b;
 }
 
-static void triggerSlice( _breakSlicer* pThis, int idx )
+// idx is the slice to play; gridPos is the rhythmic position used for the
+// Backbeat weighting (the step phase for clock-driven stepping, the slice's
+// own index for CV / MIDI / Random triggers).
+static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos )
 {
 	const int16_t* pv = pThis->v;
 
 	FxRolls rolls;
-	rollFx( pThis, rolls );
+	rollFx( pThis, rolls, backbeatWeight( pThis, gridPos ) );
 
 	bool twoLoops = pv[ kParamLoops ] && pThis->loops[1].sliced;
 
@@ -1067,25 +1329,87 @@ static void triggerSlice( _breakSlicer* pThis, int idx )
 	pThis->lastSlice = idx;
 }
 
-// pick the slice a Random input trigger should play
-static int randomSlice( _breakSlicer* pThis )
+// the loop whose slice layout drives sequencing / addressing (loop A is master)
+static Loop* canonicalLoop( _breakSlicer* pThis )
+{
+	return pThis->loops[0].sliced ? &pThis->loops[0] : &pThis->loops[1];
+}
+
+// the role a boom-bap-ish groove template expects at a grid position: kicks on
+// the beat downbeats, snares on the backbeats, hats on the offbeats
+static int expectedRole( int gridPos, int n, int beats, int spb )
+{
+	if ( gridPos % spb != 0 )
+		return kRoleHat;						// offbeat
+	int beat = ( gridPos * beats ) / n;			// 0-based beat
+	return ( beat & 1 ) ? kRoleSnare : kRoleKick;
+}
+
+// pick a random slice (0..n-1) carrying role `want` in loop rl; fall back to
+// any slice when that tag pool is empty (sparse-pool policy for Role/Pattern)
+static int pickSliceForRole( _breakSlicer* pThis, Loop* rl, int want, int n )
+{
+	int count = 0;
+	for ( int i=0; i<n; ++i )
+		if ( rl->sliceRole[i] == want )
+			++count;
+	if ( count == 0 )
+		return pThis->rng.next() % n;
+	int k = pThis->rng.next() % count;
+	for ( int i=0; i<n; ++i )
+		if ( rl->sliceRole[i] == want )
+		{
+			if ( k == 0 )
+				return i;
+			--k;
+		}
+	return pThis->rng.next() % n;				// unreachable, safety
+}
+
+// pick the slice a Random input trigger should play. gridPos receives the
+// rhythmic position for Backbeat weighting: the slice's own index for Free /
+// Beat, or the scanned groove slot for Role.
+static int randomSlice( _breakSlicer* pThis, int& gridPos )
 {
 	int n = canonicalSlices( pThis );
 	if ( n < 1 )
 		n = 1;
-	if ( pThis->v[ kParamRandomMode ] == 0 )
-		return pThis->rng.next() % n;
+	int mode = pThis->v[ kParamRandomMode ];
+	if ( mode == 0 )
+	{
+		int idx = pThis->rng.next() % n;
+		gridPos = idx;
+		return idx;
+	}
 
-	// Beat mode: jump to the same position within another beat,
-	// so downbeats land on downbeats and the groove survives.
 	int beats = ( pThis->v[ kParamBars ] + 1 ) * 4;		// 4/4 assumed
 	int spb = n / beats;								// slices per beat
 	if ( spb < 1 )
 		spb = 1;
+
+	if ( mode == 2 )
+	{
+		// Role mode: scan the groove template by grid position, advancing a
+		// dedicated phase (kept separate from the clock/MIDI stepPhase so a
+		// Random pulse never shifts the clocked sequence). Pick a random slice
+		// carrying the expected tag; fall back to any when the pool is empty.
+		Loop* rl = canonicalLoop( pThis );
+		int slot = pThis->roleRandomPhase % n;
+		pThis->roleRandomPhase = ( pThis->roleRandomPhase + 1 ) % n;
+		gridPos = slot;								// weight Backbeat by the groove slot
+		int want = expectedRole( slot, n, beats, spb );
+		return pickSliceForRole( pThis, rl, want, n );
+	}
+
+	// Beat mode: jump to the same position within another beat,
+	// so downbeats land on downbeats and the groove survives.
 	int groups = n / spb;
 	int phase = pThis->lastSlice % spb;
 	int idx = ( pThis->rng.next() % groups ) * spb + phase;
-	return ( idx < n ) ? idx : pThis->lastSlice;
+	if ( idx >= n )
+		idx = pThis->lastSlice;
+	gridPos = idx;
+	return idx;
 }
 
 // advance the clock-follow sequence, returning the slice to play
@@ -1145,9 +1469,36 @@ static int nextStep( _breakSlicer* pThis )
 		}
 		idx = pThis->perm[ pThis->shufflePos++ ];
 		break;
+	case 5:		// pattern: a groove template maps the bar position to a role,
+	{			// then a random slice of that role plays (fallback: any slice)
+		int pos = pThis->seqStep % n;
+		pThis->seqStep = ( pos + 1 ) % n;
+		int bars = pThis->v[ kParamBars ] + 1;
+		int stepsPerBar = n / bars;
+		if ( stepsPerBar < 1 )
+			stepsPerBar = 1;
+		int patIdx = ( ( pos % stepsPerBar ) * 16 ) / stepsPerBar;	// -> 16-step grid
+		if ( patIdx > 15 )
+			patIdx = 15;
+		int want = patternTable[ pThis->v[ kParamPattern ] ][ patIdx ];
+		idx = pickSliceForRole( pThis, canonicalLoop( pThis ), want, n );
+	}
+		break;
 	}
 
 	return idx;
+}
+
+// clock-driven step: play the next sequenced slice, weighting the Backbeat by
+// the rhythmic phase since Reset (so Walk/Shuffle still lean on beats 2 & 4).
+static void triggerStep( _breakSlicer* pThis )
+{
+	int n = canonicalSlices( pThis );
+	if ( n < 1 )
+		n = 1;
+	int gridPos = pThis->stepPhase % n;
+	triggerSlice( pThis, nextStep( pThis ), gridPos );
+	pThis->stepPhase = ( pThis->stepPhase + 1 ) % n;
 }
 
 // ---------------------------------------------------------------------------
@@ -1165,7 +1516,80 @@ void	midiMessage( _NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byt
 
 	int idx = (int)byte1 - 36;
 	if ( idx >= 0 && idx < canonicalSlices( pThis ) )
-		triggerSlice( pThis, idx );
+		triggerSlice( pThis, idx, idx );		// MIDI note: slice's own position
+}
+
+// MIDI clock (24 PPQN): drives tempo for Sync/ratchet/serpent and, while the
+// transport is running, steps the sequence. The analog Clock input wins if
+// patched (implicit precedence keeps the parameter count down). Realtime bytes
+// are channelless, so the MIDI channel param does not apply here.
+void	midiRealtime( _NT_algorithm* self, uint8_t byte )
+{
+	_breakSlicer* pThis = (_breakSlicer*)self;
+
+	if ( pThis->v[ kParamClockInput ] )		// analog Clock patched: CV wins
+		return;
+
+	switch ( byte )
+	{
+	case 0xF8:		// timing clock tick
+	{
+		// tempo: measure output frames across 24 ticks -> quarter-note period
+		if ( ++pThis->midiTickCount >= 24 )
+		{
+			uint32_t now = pThis->frameClock;
+			uint32_t period = now - pThis->midiLastQuarterFrame;	// wraps cleanly
+			pThis->midiLastQuarterFrame = now;
+			pThis->midiTickCount = 0;
+
+			// accept only a sane quarter note (30..300 bpm) and slew, since
+			// MIDI clock jitters more than an analog edge
+			uint32_t sr = NT_globals.sampleRate;
+			if ( period >= sr / 5 && period <= sr * 2 )
+			{
+				int div = pThis->v[ kParamClockDiv ];
+				float target = clockDivQuarters[ div ] * (float)period;
+				if ( pThis->clockPeriod <= 0.0f )
+					pThis->clockPeriod = target;
+				else
+					pThis->clockPeriod += ( target - pThis->clockPeriod ) * 0.25f;
+			}
+		}
+
+		// stepping: fire on the first tick after Start (the downbeat), then
+		// every N ticks derived from the Clock div
+		if ( pThis->midiRunning )
+		{
+			int div = pThis->v[ kParamClockDiv ];
+			int ticksPerStep = roundToInt( clockDivQuarters[ div ] * 24.0f );
+			if ( ticksPerStep < 1 )
+				ticksPerStep = 1;
+			if ( pThis->midiStepTicks == 0 )
+				triggerStep( pThis );
+			if ( ++pThis->midiStepTicks >= (uint32_t)ticksPerStep )
+				pThis->midiStepTicks = 0;
+		}
+	}
+		break;
+	case 0xFA:		// start: pull the sequence back to the top (like Reset)
+		pThis->seqStep = 0;
+		pThis->stepPhase = 0;
+		pThis->roleRandomPhase = 0;
+		pThis->ppDir = 1;
+		pThis->shufflePos = 0;
+		pThis->permN = 0;
+		pThis->midiStepTicks = 0;
+		pThis->midiTickCount = 0;
+		pThis->midiLastQuarterFrame = pThis->frameClock;	// anchor tempo here
+		pThis->midiRunning = true;
+		break;
+	case 0xFB:		// continue
+		pThis->midiRunning = true;
+		break;
+	case 0xFC:		// stop: let the current slice ring out
+		pThis->midiRunning = false;
+		break;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1282,6 +1706,28 @@ static inline void renderVoice( Voice& v, float amp, float& outL, float& outR, f
 		float hiR = r - v.svLowR - kFilterDamp * v.svBandR;
 		v.svBandR += c * hiR;
 		r = ( v.fType == 1 ) ? v.svLowR : hiR;
+	}
+
+	// low-pass gate: env drives cutoff, and amplitude follows it with a vactrol
+	// skew (env^1.5), blended against the dry voice by depth
+	if ( v.lpgActive )
+	{
+		v.lpgEnv *= v.lpgDecayCoef;
+		float env = v.lpgEnv;
+		float coef = v.lpgCoefMin + ( v.lpgCoefMax - v.lpgCoefMin ) * env;
+
+		v.lpgLowL += coef * v.lpgBandL;
+		float ghiL = l - v.lpgLowL - v.lpgDamp * v.lpgBandL;
+		v.lpgBandL += coef * ghiL;
+
+		v.lpgLowR += coef * v.lpgBandR;
+		float ghiR = r - v.lpgLowR - v.lpgDamp * v.lpgBandR;
+		v.lpgBandR += coef * ghiR;
+
+		float ampEnv = env * sqrtf( env );			// env^1.5
+		float d = v.lpgDepth;
+		l = l * ( 1.0f - d ) + v.lpgLowL * ampEnv * d;
+		r = r * ( 1.0f - d ) + v.lpgLowR * ampEnv * d;
 	}
 
 	l *= v.env * amp;
@@ -1462,6 +1908,9 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	float xfA = pThis->xfA;
 	float xfB = pThis->xfB;
 
+	float lgA = pThis->loopGain[0], lgTargetA = pThis->loopGainTarget[0];
+	float lgB = pThis->loopGain[1], lgTargetB = pThis->loopGainTarget[1];
+
 	// serpent delay time chases the clock (dotted-eighth feel: 3/4 of a tick)
 	float echoTarget = ( pThis->clockPeriod > 0.0f ) ? pThis->clockPeriod * 0.75f : 18000.0f;
 	if ( echoTarget < 480.0f ) echoTarget = 480.0f;
@@ -1472,6 +1921,8 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		if ( resetBus && risingEdge( resetBus[i], pThis->resetArmed ) )
 		{
 			pThis->seqStep = 0;
+			pThis->stepPhase = 0;
+			pThis->roleRandomPhase = 0;
 			pThis->ppDir = 1;
 			pThis->shufflePos = 0;
 			pThis->permN = 0;		// force a fresh shuffle
@@ -1493,17 +1944,22 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 				}
 				else
 					idx = (int)( cv * ( canonicalSlices( pThis ) / 5.0f ) );
-				triggerSlice( pThis, idx );
+				triggerSlice( pThis, idx, idx );	// CV-addressed: own position
 			}
 			else
 			{
 				// no Select CV: triggers follow the step mode, like Clock
-				triggerSlice( pThis, nextStep( pThis ) );
+				triggerStep( pThis );
 			}
 		}
 		if ( randBus && risingEdge( randBus[i], pThis->randArmed ) )
-			triggerSlice( pThis, randomSlice( pThis ) );
+		{
+			int gp;
+			int idx = randomSlice( pThis, gp );
+			triggerSlice( pThis, idx, gp );
+		}
 		pThis->framesSinceClock++;
+		pThis->frameClock++;		// free-running, for MIDI clock tempo
 		if ( clockBus && risingEdge( clockBus[i], pThis->clockArmed ) )
 		{
 			// measure clock period for Sync (sane range 50ms - 4s)
@@ -1512,7 +1968,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 			if ( elapsed >= NT_globals.sampleRate / 20 && elapsed <= NT_globals.sampleRate * 4 )
 				pThis->clockPeriod = (float)elapsed;
 
-			triggerSlice( pThis, nextStep( pThis ) );
+			triggerStep( pThis );
 		}
 		if ( ratchetBus )
 		{
@@ -1525,7 +1981,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 					: NT_globals.sampleRate / 8.0f;
 				if ( !pThis->ratchetHigh )
 				{
-					triggerSlice( pThis, pThis->lastSlice );
+					triggerSlice( pThis, pThis->lastSlice, pThis->lastSlice );
 					pThis->ratchetTimer = interval;
 				}
 				else
@@ -1533,7 +1989,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 					pThis->ratchetTimer -= 1.0f;
 					if ( pThis->ratchetTimer <= 0.0f )
 					{
-						triggerSlice( pThis, pThis->lastSlice );
+						triggerSlice( pThis, pThis->lastSlice, pThis->lastSlice );
 						pThis->ratchetTimer += interval;
 					}
 				}
@@ -1543,13 +1999,17 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 
 		xfA += ( xfTargetA - xfA ) * 0.002f;
 		xfB += ( xfTargetB - xfB ) * 0.002f;
+		lgA += ( lgTargetA - lgA ) * 0.002f;
+		lgB += ( lgTargetB - lgB ) * 0.002f;
+		float ampA = xfA * lgA;
+		float ampB = xfB * lgB;
 
 		float l = 0.0f, r = 0.0f;
 		float sendL = 0.0f, sendR = 0.0f;
-		renderVoice( pThis->cur, pThis->cur.loopIdx ? xfB : xfA, l, r, sendL, sendR );
-		renderVoice( pThis->fade, pThis->fade.loopIdx ? xfB : xfA, l, r, sendL, sendR );
-		renderVoice( pThis->curB, xfB, l, r, sendL, sendR );
-		renderVoice( pThis->fadeB, xfB, l, r, sendL, sendR );
+		renderVoice( pThis->cur, pThis->cur.loopIdx ? ampB : ampA, l, r, sendL, sendR );
+		renderVoice( pThis->fade, pThis->fade.loopIdx ? ampB : ampA, l, r, sendL, sendR );
+		renderVoice( pThis->curB, ampB, l, r, sendL, sendR );
+		renderVoice( pThis->fadeB, ampB, l, r, sendL, sendR );
 
 		// serpent: dub delay tail (darkened feedback, clock-chasing time)
 		{
@@ -1617,6 +2077,8 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	pThis->gain = gain;
 	pThis->xfA = xfA;
 	pThis->xfB = xfB;
+	pThis->loopGain[0] = lgA;
+	pThis->loopGain[1] = lgB;
 }
 
 // ---------------------------------------------------------------------------
@@ -1759,7 +2221,7 @@ uint32_t	hasCustomUi( _NT_algorithm* self )
 	_breakSlicer* pThis = (_breakSlicer*)self;
 	uint32_t mask = kNT_button1 | kNT_button3;	// button 1 held = tame
 	if ( pThis->editMode )
-		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potR;
+		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potButtonC | kNT_potR;
 	return mask;
 }
 
@@ -1823,6 +2285,13 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 
 	if ( pressed & kNT_encoderButtonL )
 		L->lockMask ^= 1u << pThis->selPoint;	// lock slice starting at this point
+
+	if ( pressed & kNT_potButtonC )
+	{
+		// cycle the selected slice's drum-role tag (None -> K -> S -> P -> H -> C)
+		uint8_t& role = L->sliceRole[ pThis->selPoint ];
+		role = (uint8_t)( ( role + 1 ) % kNumRoles );
+	}
 
 	if ( data.controls & kNT_potR )
 		pThis->zoomPot = data.pots[2];
@@ -1930,6 +2399,11 @@ static bool drawEditor( _breakSlicer* pThis )
 			NT_drawShapeI( kNT_rectangle, x-2, top, x+2, top+2, 15 );
 		if ( ( L.lockMask >> s ) & 1 )
 			NT_drawText( x+2, top+7, "L", 12, kNT_textLeft, kNT_textTiny );
+		if ( L.sliceRole[ s ] )
+		{
+			char rc[2] = { kRoleInitials[ L.sliceRole[ s ] ], 0 };
+			NT_drawText( x+2, top+13, rc, sel ? 15 : 10, kNT_textLeft, kNT_textTiny );
+		}
 	}
 
 	// playhead (only when playing from the loop being edited)
@@ -1978,7 +2452,7 @@ static bool drawEditor( _breakSlicer* pThis )
 	// control legend: EncL (always) / centre buttons (context) / EncR (needs a movable point)
 	{
 		bool pointEditable = pThis->selPoint >= 1;
-		NT_drawText( 0, 62, "EncL:Sel Push:Lock", 8, kNT_textLeft, kNT_textTiny );
+		NT_drawText( 0, 62, "EncL:Sel Push:Lock PotC:Role", 8, kNT_textLeft, kNT_textTiny );
 		if ( pThis->v[ kParamLoops ] && pointEditable )
 			NT_drawText( 128, 62, "B2:Loop  B4:Zero", 8, kNT_textCentre, kNT_textTiny );
 		else if ( pThis->v[ kParamLoops ] )
@@ -1993,10 +2467,11 @@ static bool drawEditor( _breakSlicer* pThis )
 }
 
 // ---------------------------------------------------------------------------
-// serialisation: manual slice points and locks persist in the preset
+// serialisation: manual slice points, locks and role tags persist in the preset
 
 static const char* const kJsonSliceNames[ kNumLoops ] = { "slicePoints", "slicePointsB" };
 static const char* const kJsonLockNames[ kNumLoops ] = { "locks", "locksB" };
+static const char* const kJsonRoleNames[ kNumLoops ] = { "roles", "rolesB" };
 
 void	serialise( _NT_algorithm* self, _NT_jsonStream& stream )
 {
@@ -2018,6 +2493,21 @@ void	serialise( _NT_algorithm* self, _NT_jsonStream& stream )
 			stream.openArray();
 			for ( int s=1; s<L.numSlices; ++s )
 				stream.addNumber( (int)L.sliceStart[ s ] );
+			stream.closeArray();
+		}
+
+		// role tags: only written if any slice is tagged. Indexed by slice, so
+		// they restore independently of the sample load order.
+		int lastTagged = -1;
+		for ( int s=0; s<kMaxSlices; ++s )
+			if ( L.sliceRole[ s ] )
+				lastTagged = s;
+		if ( lastTagged >= 0 )
+		{
+			stream.addMemberName( kJsonRoleNames[li] );
+			stream.openArray();
+			for ( int s=0; s<=lastTagged; ++s )
+				stream.addNumber( (int)L.sliceRole[ s ] );
 			stream.closeArray();
 		}
 	}
@@ -2063,6 +2553,21 @@ bool	deserialise( _NT_algorithm* self, _NT_jsonParse& parse )
 				L.pendingNumSlices = stored + 1;
 				L.havePending = ( stored > 0 );
 				applyPendingPoints( pThis, L );	// applies now if the sample beat us here
+				matched = true;
+			}
+			else if ( parse.matchName( kJsonRoleNames[li] ) )
+			{
+				int n;
+				if ( !parse.numberOfArrayElements( n ) )
+					return false;
+				for ( int i=0; i<n; ++i )
+				{
+					int v;
+					if ( !parse.number( v ) )
+						return false;
+					if ( i < kMaxSlices )
+						L.sliceRole[ i ] = ( v > 0 && v < kNumRoles ) ? (uint8_t)v : 0;
+				}
 				matched = true;
 			}
 		}
@@ -2115,6 +2620,11 @@ static void drawStrip( _breakSlicer* pThis, int li, int top, int bottom, float a
 			NT_drawShapeI( kNT_line, x, top, x, bottom, 10 );
 		if ( ( L.lockMask >> s ) & 1 )
 			NT_drawText( x+2, top+6, "L", 12, kNT_textLeft, kNT_textTiny );
+		if ( L.sliceRole[ s ] )
+		{
+			char rc[2] = { kRoleInitials[ L.sliceRole[ s ] ], 0 };
+			NT_drawText( x+2, top+12, rc, 9, kNT_textLeft, kNT_textTiny );
+		}
 	}
 
 	// current slice highlight + playhead (cur covers chance mode; curB the xfade B layer)
@@ -2233,7 +2743,7 @@ static const _NT_factory factory =
 	.parameterChanged = parameterChanged,
 	.step = step,
 	.draw = draw,
-	.midiRealtime = NULL,
+	.midiRealtime = midiRealtime,
 	.midiMessage = midiMessage,
 	.tags = kNT_tagInstrument,
 	.hasCustomUi = hasCustomUi,

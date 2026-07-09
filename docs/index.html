@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chimera — Manual</title>
+</head>
+<body>
+<style>
+  :root{
+    --bg:#08080a;
+    --ink:#e8e6e0;
+    --mid:#8f8d86;
+    --dim:#55534e;
+    --line:#2a2926;
+    --panel:#0f0f11;
+    --amber:#ffb020;
+    --amber-dim:#7a5410;
+    --mono:ui-monospace,"Cascadia Mono","JetBrains Mono",Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  html{background:var(--bg)}
+  body{
+    margin:0;
+    font-family:var(--mono);
+    font-size:14px;
+    line-height:1.7;
+    color:var(--ink);
+    background:var(--bg);
+  }
+  ::selection{background:var(--amber);color:#08080a}
+  canvas{image-rendering:pixelated}
+
+  /* ---------- hero ---------- */
+  header{
+    border-bottom:1px solid var(--line);
+    position:relative;
+    overflow:hidden;
+  }
+  #banner{
+    display:block;
+    width:100%;
+    height:290px;
+  }
+  @media (max-width:600px){
+    #banner{height:170px}
+  }
+  .hero-inner{
+    position:absolute;
+    inset:0;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    align-items:flex-start;
+    padding:0 28px;
+    pointer-events:none;
+  }
+  #wordmark{height:52px;width:auto;display:block}
+  .tagline{
+    margin-top:10px;
+    font-size:12px;
+    letter-spacing:.18em;
+    text-transform:uppercase;
+    color:var(--mid);
+  }
+  .tagline b{color:var(--amber);font-weight:400}
+
+  /* ---------- shell ---------- */
+  .shell{
+    display:grid;
+    grid-template-columns:210px minmax(0,1fr);
+    max-width:1060px;
+    margin:0 auto;
+  }
+  nav{
+    border-right:1px solid var(--line);
+    padding:28px 0;
+  }
+  nav .navbox{position:sticky;top:0;padding:16px 20px}
+  nav .navtitle{
+    font-size:10px;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--dim);margin-bottom:12px;
+  }
+  nav a{
+    display:block;
+    color:var(--mid);
+    text-decoration:none;
+    font-size:12px;
+    padding:4px 0;
+    border-left:2px solid transparent;
+    padding-left:10px;
+    margin-left:-12px;
+  }
+  nav a:hover{color:var(--ink);border-left-color:var(--dim)}
+  nav a:focus-visible{outline:1px solid var(--amber);outline-offset:2px}
+  main{
+    padding:36px 40px 90px;
+    min-width:0;
+  }
+
+  /* ---------- type ---------- */
+  h2{
+    font-size:16px;
+    font-weight:700;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    margin:64px 0 4px;
+    color:var(--ink);
+    text-wrap:balance;
+  }
+  h2::before{content:"▓▒░ ";color:var(--amber);letter-spacing:0}
+  section:first-of-type h2{margin-top:8px}
+  h3{
+    font-size:12.5px;
+    font-weight:700;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    color:var(--amber);
+    margin:34px 0 8px;
+  }
+  p{max-width:66ch;margin:12px 0;color:var(--ink)}
+  p.soft, li.soft{color:var(--mid)}
+  small,.fine{font-size:11.5px;color:var(--mid)}
+  a{color:var(--amber)}
+  code,kbd{
+    font-family:var(--mono);
+    font-size:12.5px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    padding:1px 5px;
+    color:var(--ink);
+    white-space:nowrap;
+  }
+  kbd{color:var(--amber)}
+  .rule{display:block;width:100%;height:8px;margin:10px 0 22px}
+
+  /* ---------- panels & flow ---------- */
+  .panel{
+    background:var(--panel);
+    border:1px solid var(--line);
+    padding:16px 20px;
+    margin:18px 0;
+    max-width:72ch;
+  }
+  .panel .label{
+    font-size:10px;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--dim);margin-bottom:8px;
+  }
+  pre.flow{
+    margin:18px 0;
+    padding:18px 20px;
+    background:var(--panel);
+    border:1px solid var(--line);
+    color:var(--mid);
+    font-size:12.5px;
+    line-height:1.55;
+    overflow-x:auto;
+  }
+  pre.flow b{color:var(--ink);font-weight:400}
+  pre.flow em{color:var(--amber);font-style:normal}
+
+  /* ---------- screen mock ---------- */
+  .screen-wrap{
+    background:var(--panel);
+    border:1px solid var(--line);
+    padding:18px;
+    margin:20px 0;
+    display:inline-block;
+  }
+  #screen{display:block;width:512px;max-width:100%;height:auto;background:#000}
+  .screen-cap{margin-top:10px;font-size:11px;color:var(--dim);letter-spacing:.08em}
+
+  /* ---------- tables ---------- */
+  .tblwrap{overflow-x:auto;margin:16px 0;max-width:100%}
+  table{
+    border-collapse:collapse;
+    font-size:12.5px;
+    min-width:520px;
+  }
+  th{
+    text-align:left;
+    font-size:10px;
+    letter-spacing:.18em;
+    text-transform:uppercase;
+    color:var(--dim);
+    font-weight:400;
+    padding:6px 18px 6px 0;
+    border-bottom:1px solid var(--line);
+  }
+  td{
+    padding:7px 18px 7px 0;
+    border-bottom:1px solid var(--line);
+    color:var(--mid);
+    vertical-align:top;
+    font-variant-numeric:tabular-nums;
+  }
+  td:first-child{color:var(--ink);white-space:nowrap}
+  td.rng{white-space:nowrap;color:var(--dim)}
+  tr.grp td{
+    padding-top:20px;
+    color:var(--amber);
+    font-size:10px;
+    letter-spacing:.2em;
+    text-transform:uppercase;
+    border-bottom:1px solid var(--line);
+  }
+
+  ul{max-width:66ch;padding-left:20px}
+  li{margin:6px 0;color:var(--ink)}
+  li::marker{color:var(--amber)}
+
+  .heads{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+    gap:14px;
+    max-width:76ch;
+    margin:18px 0;
+  }
+  .head-card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    padding:14px 16px;
+  }
+  .head-card .hn{
+    color:var(--amber);
+    font-size:12px;
+    letter-spacing:.2em;
+    text-transform:uppercase;
+    margin-bottom:6px;
+  }
+  .head-card p{font-size:12.5px;color:var(--mid);margin:0}
+
+  footer{
+    border-top:1px solid var(--line);
+    margin-top:70px;
+    padding:22px 40px;
+    font-size:11px;
+    color:var(--dim);
+    letter-spacing:.08em;
+    display:flex;
+    justify-content:space-between;
+    gap:16px;
+    flex-wrap:wrap;
+  }
+
+  @media (max-width:760px){
+    .shell{grid-template-columns:1fr}
+    nav{border-right:0;border-bottom:1px solid var(--line);padding:10px 0}
+    nav .navbox{position:static;display:flex;flex-wrap:wrap;gap:2px 16px;padding:10px 20px}
+    nav .navtitle{width:100%}
+    nav a{margin-left:0;padding-left:0;border-left:0}
+    main{padding:28px 20px 70px}
+    footer{padding:20px}
+  }
+</style>
+
+<header>
+  <canvas id="banner" width="1060" height="170" aria-hidden="true"></canvas>
+  <div class="hero-inner">
+    <canvas id="wordmark" aria-label="CHIMERA"></canvas>
+    <div class="tagline">Two-headed breakbeat slicer · <b>Expert Sleepers Disting NT</b> · Manual</div>
+  </div>
+</header>
+
+<div class="shell">
+<nav aria-label="Sections">
+  <div class="navbox">
+    <div class="navtitle">Index</div>
+    <a href="#beast">The beast</a>
+    <a href="#start">Getting started</a>
+    <a href="#heads">Lion &amp; Goat</a>
+    <a href="#slicing">Slicing</a>
+    <a href="#editor">Slice editor</a>
+    <a href="#trigger">Triggering</a>
+    <a href="#sequence">Sequence &amp; sync</a>
+    <a href="#fx">Effect dice</a>
+    <a href="#blend">Blend, Quarrel, Serpent</a>
+    <a href="#display">The display</a>
+    <a href="#params">Parameter reference</a>
+    <a href="#tips">Field notes</a>
+  </div>
+</nav>
+
+<main>
+
+<section id="beast">
+  <h2>The beast</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <p>Chimera is a CV-addressable breakbeat slicer: one beast stitched from two breaks. It loads one or two WAV loops into memory, cuts each into 4–32 slices, and fires slices from triggers, clocks, random pulses, CV, or MIDI. Every slice event rolls a set of effect dice — reverse, pitch, stutter, stretch, gate, filter, echo — so a static loop becomes a living break.</p>
+  <p class="soft">Inspired by <a href="https://norns.community/amen/" target="_blank" rel="noopener">amen</a> (norns) and zeptocore/<a href="https://getectocore.com/" target="_blank" rel="noopener">ectocore</a>.</p>
+
+  <pre class="flow"><b>WAV A</b> <em>LION</em> ─┐                                        ┌── <em>serpent echo</em> ──┐
+            ├── slices ── <em>trims</em> ── voice ── <em>fx dice</em> ─┤                  ├── drive ── crush ── <b>OUT</b>
+<b>WAV B</b> <em>GOAT</em> ─┘                                        └──────────────────┘
+
+            slices: equal / transient · trims: level·rate·pitch·filter
+            dice: reverse · pitch · stutter · stretch · gate · filter · serpent</pre>
+
+  <div class="heads">
+    <div class="head-card"><div class="hn">Lion</div><p>Loop A. The master head: its slice count addresses the sequencer, CV and MIDI.</p></div>
+    <div class="head-card"><div class="hn">Goat</div><p>Loop B. The second head. Blend decides how often it butts in — or crossfades against Lion.</p></div>
+    <div class="head-card"><div class="hn">Serpent</div><p>The tail. A dub delay send, rolled per slice like any other effect. Dark, clock-chasing repeats.</p></div>
+  </div>
+</section>
+
+<section id="start">
+  <h2>Getting started</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <ul>
+    <li>Put stereo or mono WAVs on the SD card in sample folders.</li>
+    <li>Add the algorithm. The <code>Max length</code> specification (1–32 s, default 8 s) reserves DRAM per loop — pick it when you add Chimera.</li>
+    <li>On the <b>Lion</b> page, choose a folder and sample. Loading is asynchronous; the display says <code>Loading...</code> until the break is in memory and sliced.</li>
+    <li>For a second break, set <code>Loops</code> to <code>2</code> on the <b>Sample</b> page, then pick Goat's folder and sample on the <b>Goat</b> page.</li>
+  </ul>
+  <div class="panel">
+    <div class="label">Filename convention</div>
+    <p style="margin:0">Name files <code>name_&lt;bpm&gt;.wav</code> — e.g. <code>amen_174.wav</code> or <code>think_87.5.wav</code>. Chimera reads the tempo from the filename and uses it for clock sync. No tempo suffix? Sync still works, one slice per clock tick.</p>
+  </div>
+</section>
+
+<section id="heads">
+  <h2>Lion &amp; Goat pages</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <p>Two breaks rarely match. Each head gets its own page — sample selection plus four <b>pre-FX trims</b>, applied at the voice before any effect dice roll. Use them to level, tune and tone-match unlike material.</p>
+  <div class="tblwrap"><table>
+    <tr><th>Trim</th><th>Range</th><th>What it does</th></tr>
+    <tr><td>Level</td><td class="rng">−40 … +6 dB</td><td>Per-loop gain, smoothly slewed. Also scales the loop's serpent echo send.</td></tr>
+    <tr><td>Rate</td><td class="rng">25 … 400 %</td><td>Varispeed. Speed and pitch move together, like a tape machine. Clock sync compensates for Rate, so a half-speed loop still lands on the grid.</td></tr>
+    <tr><td>Pitch</td><td class="rng">−24 … +24 st</td><td>Semitone tune. Free detune — sync leaves it alone, so you can tune Goat to Lion.</td></tr>
+    <tr><td>Filter</td><td class="rng">−100 … +100</td><td>One bipolar tone knob. Negative sweeps a low-pass down (18 kHz → 150 Hz); positive sweeps a high-pass up (20 Hz → 6 kHz); 0 is off.</td></tr>
+  </table></div>
+  <p class="soft">The random per-event filter sweep (FX page) takes over the voice filter for events where it fires; the static trim covers everything else — including locked slices, which dodge the dice but keep their trims.</p>
+</section>
+
+<section id="slicing">
+  <h2>Slicing</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <p><code>Slices</code> cuts each loop into 4, 8, 16 or 32 pieces. <code>Slice mode</code> decides where the knife falls:</p>
+  <ul>
+    <li><b>Equal</b> — a strict grid.</li>
+    <li><b>Transient</b> — each grid point snaps to the strongest onset within ±40 % of a slice. Onset analysis runs in the background after load (<code>analysing</code> appears top-right); slices re-snap when it finishes.</li>
+  </ul>
+  <p><code>Bars</code> (1 or 2) tells Chimera how long the loop is musically. It drives the beat-aware random mode and the <code>b2.3</code>-style position labels on the display. 4/4 assumed — it's a breakbeat slicer.</p>
+</section>
+
+<section id="editor">
+  <h2>Slice editor</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <p>Press <kbd>Button 3</kbd> to enter the editor: a zoomable waveform with movable slice points, Octatrack style. Press again to leave. Manual points and locks are saved with the preset.</p>
+  <div class="tblwrap"><table>
+    <tr><th>Control</th><th>Action</th></tr>
+    <tr><td><kbd>Encoder L</kbd></td><td>Select a slice point.</td></tr>
+    <tr><td><kbd>Encoder L push</kbd></td><td>Lock / unlock the slice starting here. Locked slices always play straight — no dice.</td></tr>
+    <tr><td><kbd>Encoder R</kbd></td><td>Nudge the point. Step size follows zoom — one screen pixel per click.</td></tr>
+    <tr><td><kbd>Encoder R push</kbd></td><td>Snap to the strongest onset within ~0.2 s.</td></tr>
+    <tr><td><kbd>Button 4</kbd></td><td>Snap to the nearest zero crossing.</td></tr>
+    <tr><td><kbd>Button 2</kbd></td><td>Switch between Lion and Goat.</td></tr>
+    <tr><td><kbd>Pot R</kbd></td><td>Zoom, 1× to 256×, centred on the selected point.</td></tr>
+  </table></div>
+  <p class="soft">Changing <code>Slices</code> or <code>Slice mode</code> re-slices from scratch and discards manual edits — deliberately.</p>
+</section>
+
+<section id="trigger">
+  <h2>Triggering</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <p>Six assignable CV inputs. Rising edges fire at 1 V, re-arm at 0.5 V.</p>
+  <div class="tblwrap"><table>
+    <tr><th>Input</th><th>Behaviour</th></tr>
+    <tr><td>Select</td><td>Chooses the slice; sampled at the moment Trig fires. <b>Linear</b>: 0–5 V spans all slices. <b>1V/Oct</b>: quantised to semitones, 0 V = C0; <code>Select offset</code> sets which note is slice 1, one slice per semitone up.</td></tr>
+    <tr><td>Trig</td><td>Fires the selected slice. With no Select input patched, each trig advances the step sequence instead.</td></tr>
+    <tr><td>Random</td><td>Fires a random slice — see <code>Random mode</code>.</td></tr>
+    <tr><td>Clock</td><td>Steps through slices (see <code>Step mode</code>) and teaches Chimera the tempo for sync, ratchets and the serpent.</td></tr>
+    <tr><td>Reset</td><td>Pulls the sequence back to slice 1.</td></tr>
+    <tr><td>Ratchet</td><td>A held gate retrigs the current slice at <code>Ratchet div</code> (1/1 … 1/8 of a clock tick).</td></tr>
+  </table></div>
+  <h3>MIDI</h3>
+  <p>Notes from 36 upward play slices directly — note 36 is slice 1, chromatically up. <code>MIDI channel</code> selects Omni or channels 1–16.</p>
+</section>
+
+<section id="sequence">
+  <h2>Sequence &amp; sync</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <h3>Step mode</h3>
+  <p><b>Forward</b>, <b>Reverse</b>, <b>PingPong</b>, <b>Walk</b> (drunk ±1), <b>Shuffle</b> (a random permutation, re-dealt each full cycle — every slice exactly once).</p>
+  <h3>Random mode</h3>
+  <p><b>Free</b> picks any slice. <b>Beat</b> jumps to the same position inside another beat, so downbeats land on downbeats and the groove survives the chaos.</p>
+  <h3>Sync</h3>
+  <p>With a clock patched, <code>Sync</code> conforms each slice to the measured tempo:</p>
+  <ul>
+    <li><b>Stretch</b> — granular timestretch. Pitch stays put, duration locks to the grid.</li>
+    <li><b>Repitch</b> — varispeed. Speed follows the clock, pitch rises and falls with it.</li>
+  </ul>
+  <p><code>Clock div</code> declares what a tick means (1/32 … 1 bar). <b>Auto</b> octave-normalises the ratio, so any power-of-two clock just works. The measured tempo shows top-left, as <code>174&gt;172.3</code> — file tempo → clock tempo.</p>
+</section>
+
+<section id="fx">
+  <h2>Effect dice</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <p>Every slice event rolls all dice at once, amen style. Each effect has a 0–100 % probability. Map a probability to a fader for controlled chaos, or to a gate (0/100) for manual punch-in.</p>
+  <div class="tblwrap"><table>
+    <tr><th>Die</th><th>Effect</th></tr>
+    <tr><td>Reverse</td><td>Slice plays backwards.</td></tr>
+    <tr><td>Pitch up / down</td><td>Repitch by <code>Pitch amount</code> semitones (1–24, default 12). Both fire → they cancel.</td></tr>
+    <tr><td>Stutter</td><td>Retrigs a sub-loop of the slice: <code>Stutter div</code> 1/2 … 1/16, or Random.</td></tr>
+    <tr><td>Stretch</td><td>Granular timestretch to <code>Stretch amount</code> (110–400 %). Stacks on top of sync stretch.</td></tr>
+    <tr><td>Gate</td><td>MPC-style tight chop to half length.</td></tr>
+    <tr><td>Filter</td><td>A random LP or HP sweep across the slice, 200 Hz – 8 kHz, log-spaced ends.</td></tr>
+    <tr><td>Serpent</td><td>Sends the slice into the echo tail.</td></tr>
+  </table></div>
+  <h3>Break</h3>
+  <p>The macro. Scales every probability at once: <b>50 = as set</b>, 0 = all dice silent, 100 = all doubled. Map it to a big knob.</p>
+  <h3>Tame</h3>
+  <p>Hold <kbd>Button 1</kbd> and the beast behaves — every die is suppressed while held. <code>tamed</code> shows on the display. Release to let it loose.</p>
+  <h3>Always-on colour</h3>
+  <p><code>Crush</code> is an SP-1200-calibrated decimator — 50 is exactly 12 bits at 26.04 kHz. <code>Drive</code> is soft-clip saturation with automatic makeup gain. Both sit on the master bus, after the echo.</p>
+</section>
+
+<section id="blend">
+  <h2>Blend, Quarrel, Serpent</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <h3>Blend</h3>
+  <p>With two loops loaded, <code>Blend</code> intermingles the heads. Two modes:</p>
+  <ul>
+    <li><b>Chance</b> — Blend is the probability that a slice event draws from Goat instead of Lion. Same slice index, other break.</li>
+    <li><b>Xfade</b> — both heads play every slice; Blend is an equal-power crossfade between them.</li>
+  </ul>
+  <h3>Quarrel</h3>
+  <p>The heads fight over the fader. <code>Quarrel</code> adds a random walk (±50) on top of Blend, leaking back toward centre. Higher = more violent disagreement.</p>
+  <h3>Serpent</h3>
+  <p>A dub delay tail. Slices that roll the Serpent die are sent into a feedback echo with darkened repeats. The delay time chases the clock at a dotted-eighth feel (¾ of a tick); unclocked it sits at 375 ms.</p>
+</section>
+
+<section id="display">
+  <h2>The display</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <div class="screen-wrap">
+    <canvas id="screen" width="256" height="64" role="img" aria-label="Mock of the performance display: two waveform strips with slice markers, labels LION and GOAT, current slice highlighted"></canvas>
+    <div class="screen-cap">PERFORMANCE VIEW · two loops · playhead on Lion, slice 5, beat 2.1</div>
+  </div>
+  <p>One strip per loop — waveform, slice markers, lock flags, the current slice underlined, a moving playhead. Top-right shows the last event as <code>Lion S5 b2.1</code>: slice number plus its musical position (only when slices divide evenly into the beats). Top-left shows tempo when synced. Status text says <code>analysing</code>, <code>tamed</code>, <code>Loading...</code> or <code>No sample</code> when relevant.</p>
+</section>
+
+<section id="params">
+  <h2>Parameter reference</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <div class="tblwrap"><table>
+    <tr><th>Parameter</th><th>Range</th><th>Default</th><th>Notes</th></tr>
+    <tr class="grp"><td colspan="4">Sample</td></tr>
+    <tr><td>Loops</td><td class="rng">1 / 2</td><td class="rng">1</td><td>Goat page and blend controls grey out at 1.</td></tr>
+    <tr><td>Slices</td><td class="rng">4 / 8 / 16 / 32</td><td class="rng">16</td><td>Short samples auto-halve the count.</td></tr>
+    <tr><td>Slice mode</td><td class="rng">Equal / Transient</td><td class="rng">Equal</td><td></td></tr>
+    <tr><td>Bars</td><td class="rng">1 / 2</td><td class="rng">1</td><td>For Beat-mode random and labels.</td></tr>
+    <tr class="grp"><td colspan="4">Lion / Goat (each)</td></tr>
+    <tr><td>Folder / Sample</td><td class="rng">—</td><td class="rng">—</td><td>SD card sample browser.</td></tr>
+    <tr><td>Level</td><td class="rng">−40 … +6 dB</td><td class="rng">0</td><td>Pre-FX trim.</td></tr>
+    <tr><td>Rate</td><td class="rng">25 … 400 %</td><td class="rng">100</td><td>Varispeed; sync-compensated.</td></tr>
+    <tr><td>Pitch</td><td class="rng">−24 … +24 st</td><td class="rng">0</td><td>Free tune.</td></tr>
+    <tr><td>Filter</td><td class="rng">−100 … +100</td><td class="rng">0</td><td>− LP · 0 off · + HP.</td></tr>
+    <tr class="grp"><td colspan="4">Triggers</td></tr>
+    <tr><td>Select / Trig / Random / Clock / Reset / Ratchet</td><td class="rng">bus</td><td class="rng">—</td><td>Six CV inputs, all optional.</td></tr>
+    <tr><td>Select mode</td><td class="rng">Linear / 1V/Oct</td><td class="rng">Linear</td><td></td></tr>
+    <tr><td>Select offset</td><td class="rng">0 … 127</td><td class="rng">36</td><td>Root note for 1V/Oct.</td></tr>
+    <tr class="grp"><td colspan="4">Sequence</td></tr>
+    <tr><td>Sync</td><td class="rng">Off / Stretch / Repitch</td><td class="rng">Off</td><td></td></tr>
+    <tr><td>Clock div</td><td class="rng">Auto … 1 bar</td><td class="rng">Auto</td><td></td></tr>
+    <tr><td>Step mode</td><td class="rng">5 modes</td><td class="rng">Forward</td><td></td></tr>
+    <tr><td>Random mode</td><td class="rng">Free / Beat</td><td class="rng">Free</td><td></td></tr>
+    <tr><td>Ratchet div</td><td class="rng">1/1 … 1/8</td><td class="rng">1/4</td><td></td></tr>
+    <tr><td>MIDI channel</td><td class="rng">Omni / 1–16</td><td class="rng">Omni</td><td></td></tr>
+    <tr class="grp"><td colspan="4">FX</td></tr>
+    <tr><td>Reverse … Serpent</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Eight per-event probabilities.</td></tr>
+    <tr><td>Blend</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Chance or crossfade.</td></tr>
+    <tr><td>Blend mode</td><td class="rng">Chance / Xfade</td><td class="rng">Chance</td><td></td></tr>
+    <tr><td>Quarrel</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Blend random walk.</td></tr>
+    <tr><td>Break</td><td class="rng">0 … 100 %</td><td class="rng">50</td><td>Probability macro.</td></tr>
+    <tr class="grp"><td colspan="4">FX setup</td></tr>
+    <tr><td>Pitch amount</td><td class="rng">1 … 24 st</td><td class="rng">12</td><td></td></tr>
+    <tr><td>Stutter div</td><td class="rng">1/2 … 1/16 / Random</td><td class="rng">Random</td><td></td></tr>
+    <tr><td>Stretch amount</td><td class="rng">110 … 400 %</td><td class="rng">200</td><td></td></tr>
+    <tr><td>Crush</td><td class="rng">0 … 100</td><td class="rng">0</td><td>50 = SP-1200.</td></tr>
+    <tr><td>Drive</td><td class="rng">0 … 100</td><td class="rng">0</td><td>Soft clip + makeup.</td></tr>
+    <tr class="grp"><td colspan="4">Routing</td></tr>
+    <tr><td>Output L / R</td><td class="rng">bus</td><td class="rng">13 / 14</td><td>Add or replace.</td></tr>
+    <tr><td>Level</td><td class="rng">−40 … +6 dB</td><td class="rng">0</td><td>Master, slewed.</td></tr>
+  </table></div>
+</section>
+
+<section id="tips">
+  <h2>Field notes</h2>
+  <canvas class="rule" aria-hidden="true"></canvas>
+  <ul>
+    <li class="soft"><b style="color:var(--ink)">Lock the one.</b> Lock slice 1 (and the snare on beat 3) in the editor — the groove anchors itself no matter how hard the dice roll.</li>
+    <li class="soft"><b style="color:var(--ink)">Gate the dice.</b> Map Reverse or Stutter probability to a manual gate at 0/100 for zeptocore-style punch-ins.</li>
+    <li class="soft"><b style="color:var(--ink)">Two breaks, one tempo.</b> Trim Goat's Rate to match Lion's feel, then let Blend Chance at ~30 % swap hits between them.</li>
+    <li class="soft"><b style="color:var(--ink)">Ratchet + Break.</b> Hold a ratchet gate while sweeping Break up — instant fill, ends exactly on the next tick.</li>
+    <li class="soft"><b style="color:var(--ink)">CPU.</b> Light: roughly 2–3 % typical, ~5 % worst case (Xfade, all dice hot, drive and crush on). A brief analysis burst follows each sample load.</li>
+  </ul>
+</section>
+
+</main>
+</div>
+
+<footer>
+  <span>CHIMERA · disting NT plugin</span>
+  <span>lion · goat · serpent</span>
+</footer>
+
+<script>
+(function(){
+  'use strict';
+
+  // ---- Bayer 8x8 ordered dither -------------------------------------------
+  var B8 = [
+    [ 0,32, 8,40, 2,34,10,42],
+    [48,16,56,24,50,18,58,26],
+    [12,44, 4,36,14,46, 6,38],
+    [60,28,52,20,62,30,54,22],
+    [ 3,35,11,43, 1,33, 9,41],
+    [51,19,59,27,49,17,57,25],
+    [15,47, 7,39,13,45, 5,37],
+    [63,31,55,23,61,29,53,21]
+  ];
+
+  function hex(c){ return [parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)]; }
+
+  // ---- the beast: dithered chimera, remapped to the palette ----------------
+  var CHIMERA_B64='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';
+  var beast=null, beastSil=null, SILW=0, SILH=0;
+  function buildSil(){
+    // low-res (1 field px = 3 device px) silhouette of the beast, dilated:
+    // full clear within 2px, half-strength halo to 5px
+    SILW=Math.ceil(beast.width/3); SILH=Math.ceil(beast.height/3);
+    var c=document.createElement('canvas'); c.width=SILW; c.height=SILH;
+    var x=c.getContext('2d');
+    x.drawImage(beast,0,0,SILW,SILH);
+    var d=x.getImageData(0,0,SILW,SILH).data;
+    var base=new Uint8Array(SILW*SILH);
+    for(var i=0;i<SILW*SILH;i++) base[i]=d[i*4+3]>40?1:0;
+    beastSil=new Float32Array(SILW*SILH);
+    for(var y=0;y<SILH;y++){
+      for(var xx=0;xx<SILW;xx++){
+        var m=0;
+        for(var dy=-5;dy<=5&&m<1;dy++){
+          for(var dx=-5;dx<=5;dx++){
+            var nx=xx+dx,ny=y+dy;
+            if(nx<0||ny<0||nx>=SILW||ny>=SILH) continue;
+            if(base[ny*SILW+nx]){
+              var r=Math.max(Math.abs(dx),Math.abs(dy));
+              var v=(r<=2)?1:0.55;
+              if(v>m)m=v;
+              if(m>=1)break;
+            }
+          }
+        }
+        beastSil[y*SILW+xx]=m;
+      }
+    }
+  }
+  function prepBeast(done){
+    var img=new Image();
+    img.onload=function(){ beast=img; buildSil(); done(); };
+    img.src='data:image/png;base64,'+CHIMERA_B64;
+  }
+
+  // draw a dithered vertical/diagonal gradient into ctx at 1x pixel scale
+  function ditherField(ctx,w,h,colA,colB,fn){
+    var img = ctx.createImageData(w,h);
+    var a = hex(colA), b = hex(colB);
+    for(var y=0;y<h;y++){
+      for(var x=0;x<w;x++){
+        var v = fn(x,y,w,h);            // 0..1 brightness
+        var t = (B8[y&7][x&7]+0.5)/64;
+        var on = v > t;
+        var c = on ? b : a;
+        var i = (y*w+x)*4;
+        img.data[i]=c[0]; img.data[i+1]=c[1]; img.data[i+2]=c[2]; img.data[i+3]=255;
+      }
+    }
+    ctx.putImageData(img,0,0);
+  }
+
+  // ---- hero banner ---------------------------------------------------------
+  function drawBanner(){
+    var cv = document.getElementById('banner');
+    if(!cv) return;
+    var scale = 3;                       // chunky pixels
+    var w = Math.ceil(cv.clientWidth/scale)||354, h = Math.ceil((cv.clientHeight||290)/scale);
+    var off = document.createElement('canvas');
+    off.width=w; off.height=h;
+    var octx = off.getContext('2d');
+    // clear zone around the hero text: dim the field inside a soft-edged
+    // rectangle (left side, vertically centred) so the type sits on quiet dark
+    function textClear(x,y,H){
+      // asymmetric: clears well above the text, ends just under the tagline
+      // so the horizon band runs beneath it (up/dn in field px from centre)
+      var rx = 240, up = 30, dn = 16, fall = 10;
+      var fx = (rx - x)/fall;
+      var dyv = y - H*0.5;
+      var fy = Math.min( (dyv+up)/fall, (dn-dyv)/fall );
+      var s = Math.min(1, Math.max(0, Math.min(fx, fy)));
+      return 1 - s*0.94;
+    }
+    // and behind the beast: silhouette-shaped, from its dilated alpha mask
+    // soft rectangle helper: 1 inside, 0 outside, edge width `fall`
+    function winRect(x,y,x0,x1,y0,y1,fall){
+      var f = Math.min( (x-x0)/fall, (x1-x)/fall, (y-y0)/fall, (y1-y)/fall );
+      return Math.min(1, Math.max(0, f));
+    }
+    function beastClear(x,y){
+      if ( !beastSil || w*scale < 700 ) return 1;
+      var bx0 = (w*scale - beast.width - 40)/scale;
+      var by0 = (h*scale - beast.height)/scale;
+      var sx = Math.round(x - bx0), sy = Math.round(y - by0);
+      if ( sx<0 || sy<0 || sx>=SILW || sy>=SILH ) return 1;
+      var m = beastSil[ sy*SILW + sx ];
+      // windows where the horizon band pushes through the mask.
+      // coords are beast-local field px (beast = 124 x 92): x0,x1,y0,y1
+      m *= 1 - 0.85*winRect( sx,sy,  0,36, 57,92, 4 );   // under the tail
+      m *= 1 - 0.85*winRect( sx,sy, 68,82, 58,80, 4 );   // belly gap
+      return 1 - m*0.92;
+    }
+    function fieldMask(x,y,H){ return textClear(x,y,H) * beastClear(x,y); }
+    ditherField(octx,w,h,'#08080a','#3a3220',function(x,y,W,H){
+      // diagonal fade, brightest bottom-right, with a horizon band
+      var g = (x/W)*0.55 + (y/H)*0.6 - 0.45;
+      var band = Math.exp(-Math.pow((y - H*0.68)/(H*0.16),2))*0.28;
+      return Math.max(0, g + band) * fieldMask(x,y,H);
+    });
+    // amber scatter pass: sparse bright pixels along the horizon
+    var img2 = octx.getImageData(0,0,w,h);
+    var am = hex('#ffb020');
+    for(var y=0;y<h;y++){
+      for(var x=0;x<w;x++){
+        var band = Math.exp(-Math.pow((y - h*0.68)/(h*0.05),2));
+        // hard gate: no amber at all where the text zone has any pull —
+        // dimming alone still lets the lowest dither thresholds fire
+        if ( textClear(x,y,h) < 0.9 ) continue;
+        var v = band * (0.35 + 0.65*(x/w)) * 0.95 * beastClear(x,y);
+        var t = (B8[y&7][x&7]+0.5)/64;
+        if(v > t){
+          var i=(y*w+x)*4;
+          img2.data[i]=am[0]; img2.data[i+1]=am[1]; img2.data[i+2]=am[2];
+        }
+      }
+    }
+    octx.putImageData(img2,0,0);
+    cv.width = w*scale; cv.height = h*scale;
+    var ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(off,0,0,cv.width,cv.height);
+    // the beast walks the horizon, 1:1 pixels, clear of the wordmark
+    if(beast && cv.width >= 700){
+      ctx.drawImage(beast, cv.width - beast.width - 40, cv.height - beast.height);
+    }
+  }
+
+  // ---- pixel wordmark: CHIMERA pre-rendered in Alagard (68x13) -------------
+  var WORDMARK_B64='iVBORw0KGgoAAAANSUhEUgAAAEQAAAANCAYAAAAQRMgWAAAA6UlEQVR4nO1W0QrDIAyMso8Qn/z/r9rT2F90T44QkrvUlrGNHpTWeEnOYKwiFzCej/s2nzm2857PXpvO4Y2tT1aX5aE1enPVElsfJVrUmcVgfG3P6mI8pkNEFUQH00GZ6AzPirCiWT5P1/xmPBuz9VFQ0Wq0iOnIknh+yGbno7jIjuJFMewaI7/qGX8d2d3s4fbphEfzsZ2K2jPiaSwVhB1cZyPbrroA7C/T+ijwUP0HZAqHdo2I89v1AqzJ+06wolVLyvagxeodZeWuw+4tR+K/zxDdU/OdLUbEzdjQ2NOEdK3kQ/EuiMgLPp0+cFwZMYUAAAAASUVORK5CYII=';
+  var wordImg=null;
+  function drawWordmark(){
+    var cv = document.getElementById('wordmark');
+    if(!cv || !wordImg) return;
+    var px=5;
+    // amber-tinted copy for a 1-pixel drop shadow
+    var sh=document.createElement('canvas');
+    sh.width=wordImg.width; sh.height=wordImg.height;
+    var sctx=sh.getContext('2d');
+    sctx.drawImage(wordImg,0,0);
+    sctx.globalCompositeOperation='source-in';
+    sctx.fillStyle='#ffb020';
+    sctx.fillRect(0,0,sh.width,sh.height);
+    cv.width=(wordImg.width+1)*px; cv.height=(wordImg.height+1)*px;
+    var ctx=cv.getContext('2d');
+    ctx.imageSmoothingEnabled=false;
+    ctx.drawImage(sh,px,px,wordImg.width*px,wordImg.height*px);
+    ctx.drawImage(wordImg,0,0,wordImg.width*px,wordImg.height*px);
+    cv.style.height=cv.height+'px';
+  }
+
+  // ---- section rules: dithered density ramps ------------------------------
+  function drawRules(){
+    var rules=document.querySelectorAll('canvas.rule');
+    for(var r=0;r<rules.length;r++){
+      var cv=rules[r];
+      var scale=2;
+      var w=Math.max(60,Math.ceil((cv.clientWidth||600)/scale)), h=4;
+      var off=document.createElement('canvas');
+      off.width=w; off.height=h;
+      var octx=off.getContext('2d');
+      ditherField(octx,w,h,'#08080a','#55534e',function(x,y,W){
+        return Math.max(0,1 - x/(W*0.9));
+      });
+      cv.width=w*scale; cv.height=h*scale;
+      var ctx=cv.getContext('2d');
+      ctx.imageSmoothingEnabled=false;
+      ctx.drawImage(off,0,0,cv.width,cv.height);
+    }
+  }
+
+  // ---- 256x64 performance-view mock ---------------------------------------
+  function drawScreen(){
+    var cv=document.getElementById('screen');
+    if(!cv) return;
+    var ctx=cv.getContext('2d');
+    ctx.fillStyle='#000'; ctx.fillRect(0,0,256,64);
+
+    // deterministic pseudo-waveform
+    function amp(i,seed){
+      var v=Math.sin(i*0.31+seed)*0.4+Math.sin(i*0.087+seed*2.7)*0.35+Math.sin(i*1.7+seed*5.1)*0.25;
+      var hit=(i%32)<3?1:((i%16)<2?0.7:0.28);
+      return Math.abs(v)*hit;
+    }
+    function strip(top,bottom,seed,label){
+      var mid=(top+bottom)>>1, half=(bottom-top)>>1;
+      ctx.fillStyle='#666';
+      for(var b=0;b<128;b++){
+        var h=Math.max(1,Math.round(amp(b,seed)*half));
+        ctx.fillRect(b*2,mid-h,1,h*2);
+      }
+      ctx.fillStyle='#999';
+      for(var s=1;s<16;s++){ ctx.fillRect(s*16,top,1,bottom-top); }
+      // label, tiny pixel text
+      ctx.font='6px monospace'; ctx.fillStyle='#555'; ctx.textAlign='right';
+      ctx.fillText(label,254,top+7);
+    }
+    strip(15,37,1.3,'LION');
+    strip(40,62,4.8,'GOAT');
+    // current slice highlight on Lion: slice 5 => x 64..80
+    ctx.fillStyle='#fff';
+    ctx.fillRect(64,15,16,2);
+    ctx.fillRect(71,15,1,22);          // playhead
+    // lock flag on slice 1
+    ctx.font='6px monospace'; ctx.textAlign='left'; ctx.fillStyle='#bbb';
+    ctx.fillText('L',2,21);
+    // status text
+    ctx.textAlign='right'; ctx.fillStyle='#888';
+    ctx.fillText('Lion S5 b2.1',254,12);
+    ctx.textAlign='left'; ctx.fillStyle='#666';
+    ctx.fillText('174>172.3',1,12);
+  }
+
+  function drawAll(){ drawBanner(); drawWordmark(); drawRules(); drawScreen(); }
+  drawAll();
+  prepBeast(drawBanner);
+  (function(){
+    var wm=new Image();
+    wm.onload=function(){ wordImg=wm; drawWordmark(); };
+    wm.src='data:image/png;base64,'+WORDMARK_B64;
+  })();
+  var t;
+  window.addEventListener('resize',function(){ clearTimeout(t); t=setTimeout(drawAll,150); });
+})();
+</script>
+
+</body>
+</html>
