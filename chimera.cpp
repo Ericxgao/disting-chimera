@@ -3061,7 +3061,7 @@ bool	draw( _NT_algorithm* self )
 
 static const _NT_factory factory =
 {
-	.guid = NT_MULTICHAR( 'C', 'h', 'i', 'm' ),
+	.guid = NT_MULTICHAR( 'C', 'h', 'i', 'm' ),		// guid
 	.name = "Chimera",
 	.description = "Two-headed breakbeat slicer",
 	.numSpecifications = ARRAY_SIZE(specifications),
