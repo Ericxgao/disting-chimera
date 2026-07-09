@@ -21,6 +21,11 @@
  *   Blend sets the probability that a slice event draws from loop B
  *   instead of loop A (same slice index, other break).
  *
+ * Per-loop trims (Lion / Goat pages):
+ *   level, rate (varispeed %), pitch (semitones) and a bipolar filter
+ *   (negative = low-pass, positive = high-pass) applied to each voice
+ *   before the per-event effect dice, to match unlike breaks.
+ *
  * Effects (rolled per slice event, amen style):
  *   each has a 0-100% probability parameter; map it to a fader for
  *   controlled chaos, or map it to a gate (0/100) for manual punch-in.
@@ -168,6 +173,16 @@ enum
 	kParamSelectMode,
 	kParamSelectOffset,
 
+	// per-loop pre-fx trims (appended so older presets still load)
+	kParamLionLevel,
+	kParamLionRate,
+	kParamLionPitch,
+	kParamLionFilter,
+	kParamGoatLevel,
+	kParamGoatRate,
+	kParamGoatPitch,
+	kParamGoatFilter,
+
 	kNumParams,
 };
 
@@ -241,9 +256,20 @@ static const _NT_parameter parameters[] = {
 
 	{ .name = "Select mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = selectModeStrings },
 	{ .name = "Select offset", .min = 0, .max = 127, .def = 36, .unit = kNT_unitMIDINote, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "Lion level", .min = -40, .max = 6, .def = 0, .unit = kNT_unitDb, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Lion rate", .min = 25, .max = 400, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Lion pitch", .min = -24, .max = 24, .def = 0, .unit = kNT_unitSemitones, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Lion filter", .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Goat level", .min = -40, .max = 6, .def = 0, .unit = kNT_unitDb, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Goat rate", .min = 25, .max = 400, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Goat pitch", .min = -24, .max = 24, .def = 0, .unit = kNT_unitSemitones, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Goat filter", .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
-static const uint8_t pageSample[] = { kParamLoops, kParamFolder, kParamSample, kParamFolderB, kParamSampleB, kParamSlices, kParamSliceMode, kParamBars };
+static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamBars };
+static const uint8_t pageLion[] = { kParamFolder, kParamSample, kParamLionLevel, kParamLionRate, kParamLionPitch, kParamLionFilter };
+static const uint8_t pageGoat[] = { kParamFolderB, kParamSampleB, kParamGoatLevel, kParamGoatRate, kParamGoatPitch, kParamGoatFilter };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
 static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
 static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak };
@@ -252,6 +278,8 @@ static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutpu
 
 static const _NT_parameterPage pages[] = {
 	{ .name = "Sample", .numParams = ARRAY_SIZE(pageSample), .params = pageSample },
+	{ .name = "Lion", .numParams = ARRAY_SIZE(pageLion), .params = pageLion },
+	{ .name = "Goat", .numParams = ARRAY_SIZE(pageGoat), .params = pageGoat },
 	{ .name = "Triggers", .numParams = ARRAY_SIZE(pageTriggers), .params = pageTriggers },
 	{ .name = "Sequence", .numParams = ARRAY_SIZE(pageSeq), .params = pageSeq },
 	{ .name = "FX", .numParams = ARRAY_SIZE(pageFx), .params = pageFx },
@@ -422,6 +450,13 @@ struct _breakSlicer : public _NT_algorithm
 	// cached parameter values
 	float			gain, gainTarget;
 	float			pitchUpFactor, pitchDownFactor;
+
+	// per-loop pre-fx trims
+	float			loopGain[ kNumLoops ], loopGainTarget[ kNumLoops ];
+	float			loopSpeed[ kNumLoops ];		// rate param, as a factor
+	float			loopTune[ kNumLoops ];		// pitch param, as a factor
+	uint8_t			loopFType[ kNumLoops ];		// 0 none, 1 LP, 2 HP
+	float			loopFCoef[ kNumLoops ];		// SVF frequency coefficient
 
 	Voice			cur, fade;		// primary layer (chance mode; loop A in xfade)
 	Voice			curB, fadeB;	// second layer, used only in xfade blend mode
@@ -603,6 +638,12 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 	alg->gain = alg->gainTarget = 1.0f;
 	alg->pitchUpFactor = 2.0f;
 	alg->pitchDownFactor = 0.5f;
+	for ( int li=0; li<kNumLoops; ++li )
+	{
+		alg->loopGain[li] = alg->loopGainTarget[li] = 1.0f;
+		alg->loopSpeed[li] = 1.0f;
+		alg->loopTune[li] = 1.0f;
+	}
 	alg->trigArmed = alg->randArmed = alg->clockArmed = alg->resetArmed = true;
 	alg->ppDir = 1;
 	alg->rng.seed( 0xBEA7BEA7u );
@@ -748,6 +789,10 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	uint32_t off = NT_parameterOffset();
 	NT_setParameterGrayedOut( algIdx, kParamFolderB + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamSampleB + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamGoatLevel + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamGoatRate + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamGoatPitch + off, gray );
+	NT_setParameterGrayedOut( algIdx, kParamGoatFilter + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamBlend + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamBlendMode + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamQuarrel + off, gray );
@@ -825,6 +870,46 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		float d = (float)pThis->v[ kParamDrive ];
 		pThis->drivePre = 1.0f + d * 0.15f;				// 1x .. 16x into the shaper
 		pThis->driveMakeup = 1.0f / sqrtf( pThis->drivePre );
+	}
+		break;
+	case kParamLionLevel:
+	case kParamGoatLevel:
+	{
+		int li = ( p == kParamGoatLevel );
+		pThis->loopGainTarget[li] = powf( 10.0f, pThis->v[p] / 20.0f );
+	}
+		break;
+	case kParamLionRate:
+	case kParamGoatRate:
+	{
+		int li = ( p == kParamGoatRate );
+		pThis->loopSpeed[li] = pThis->v[p] / 100.0f;
+	}
+		break;
+	case kParamLionPitch:
+	case kParamGoatPitch:
+	{
+		int li = ( p == kParamGoatPitch );
+		pThis->loopTune[li] = powf( 2.0f, pThis->v[p] / 12.0f );
+	}
+		break;
+	case kParamLionFilter:
+	case kParamGoatFilter:
+	{
+		int li = ( p == kParamGoatFilter );
+		int fv = pThis->v[p];
+		if ( !fv )
+			pThis->loopFType[li] = 0;
+		else
+		{
+			// negative: LP 18kHz -> 150Hz; positive: HP 20Hz -> 6kHz (log)
+			float t = ( ( fv < 0 ) ? -fv : fv ) / 100.0f;
+			float hz = ( fv < 0 ) ? 18000.0f * expf( -4.7875f * t )
+								  : 20.0f * expf( 5.7038f * t );
+			pThis->loopFType[li] = ( fv < 0 ) ? 1 : 2;
+			float k = 6.2831853f / (float)NT_globals.sampleRate;
+			pThis->loopFCoef[li] = 2.0f * sinf( 0.5f * k * hz );
+		}
 	}
 		break;
 	}
@@ -912,9 +997,10 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 
 	Voice& v = voice;
 	memset( &v, 0, sizeof(Voice) );
+	int li = (int)( lp - pThis->loops );
 	v.active = 1;
 	v.sliceIdx = (int8_t)idx;
-	v.loopIdx = (uint8_t)( lp - pThis->loops );
+	v.loopIdx = (uint8_t)li;
 	v.buf = lp->sample;
 	v.bufFrames = lp->numFrames;
 	v.start = start;
@@ -939,7 +1025,8 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 		pitch = pThis->pitchDownFactor;
 
 	v.dir = rev ? -1.0f : 1.0f;
-	v.rate = lp->srRatio * pitch;
+	// per-loop rate and tune trims apply under the fx pitch dice
+	v.rate = lp->srRatio * pitch * pThis->loopSpeed[ li ] * pThis->loopTune[ li ];
 	v.pos = rev ? (float)( end - 1 ) : (float)start;
 
 	// clock sync: conform slice duration to the measured clock
@@ -953,7 +1040,8 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 			// known file tempo: uniform ratio, preserves groove with uneven slices
 			int div = pv[ kParamClockDiv ];
 			float clockBpm = 60.0f * NT_globals.sampleRate * clockDivQuarters[ div ] / pThis->clockPeriod;
-			f = lp->fileBpm / clockBpm;
+			// rate trim shifts the loop's effective tempo (tune stays free)
+			f = lp->fileBpm * pThis->loopSpeed[ li ] / clockBpm;
 			if ( div == 0 )
 			{
 				// Auto: octave-normalise so any power-of-two clock division works
@@ -1023,6 +1111,13 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 		v.fCoef = rolls.filtC0;
 		float fl = ( v.framesLeft > 1.0f ) ? v.framesLeft : 1.0f;
 		v.fCoefStep = ( rolls.filtC1 - rolls.filtC0 ) / fl;
+	}
+	else if ( pThis->loopFType[ li ] )
+	{
+		// static per-loop tone filter (the fx sweep takes over when it fires)
+		v.fType = pThis->loopFType[ li ];
+		v.fCoef = pThis->loopFCoef[ li ];
+		v.fCoefStep = 0.0f;
 	}
 }
 
@@ -1462,6 +1557,9 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	float xfA = pThis->xfA;
 	float xfB = pThis->xfB;
 
+	float lgA = pThis->loopGain[0], lgTargetA = pThis->loopGainTarget[0];
+	float lgB = pThis->loopGain[1], lgTargetB = pThis->loopGainTarget[1];
+
 	// serpent delay time chases the clock (dotted-eighth feel: 3/4 of a tick)
 	float echoTarget = ( pThis->clockPeriod > 0.0f ) ? pThis->clockPeriod * 0.75f : 18000.0f;
 	if ( echoTarget < 480.0f ) echoTarget = 480.0f;
@@ -1543,13 +1641,17 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 
 		xfA += ( xfTargetA - xfA ) * 0.002f;
 		xfB += ( xfTargetB - xfB ) * 0.002f;
+		lgA += ( lgTargetA - lgA ) * 0.002f;
+		lgB += ( lgTargetB - lgB ) * 0.002f;
+		float ampA = xfA * lgA;
+		float ampB = xfB * lgB;
 
 		float l = 0.0f, r = 0.0f;
 		float sendL = 0.0f, sendR = 0.0f;
-		renderVoice( pThis->cur, pThis->cur.loopIdx ? xfB : xfA, l, r, sendL, sendR );
-		renderVoice( pThis->fade, pThis->fade.loopIdx ? xfB : xfA, l, r, sendL, sendR );
-		renderVoice( pThis->curB, xfB, l, r, sendL, sendR );
-		renderVoice( pThis->fadeB, xfB, l, r, sendL, sendR );
+		renderVoice( pThis->cur, pThis->cur.loopIdx ? ampB : ampA, l, r, sendL, sendR );
+		renderVoice( pThis->fade, pThis->fade.loopIdx ? ampB : ampA, l, r, sendL, sendR );
+		renderVoice( pThis->curB, ampB, l, r, sendL, sendR );
+		renderVoice( pThis->fadeB, ampB, l, r, sendL, sendR );
 
 		// serpent: dub delay tail (darkened feedback, clock-chasing time)
 		{
@@ -1617,6 +1719,8 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	pThis->gain = gain;
 	pThis->xfA = xfA;
 	pThis->xfB = xfB;
+	pThis->loopGain[0] = lgA;
+	pThis->loopGain[1] = lgB;
 }
 
 // ---------------------------------------------------------------------------
