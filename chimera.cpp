@@ -16,6 +16,7 @@
  *   Reset in      -> stepping back to slice 1
  *   Ratchet in    -> gate held retrigs current slice at a clock subdivision
  *   MIDI notes from C1 (36) play slices directly
+ *   MIDI clock    -> tempo + transport-driven stepping (if no analog Clock)
  *
  * Two-loop intermingle:
  *   Blend sets the probability that a slice event draws from loop B
@@ -36,6 +37,8 @@
  * Clock sync:
  *   Filename convention "name_<bpm>.wav" gives the loop tempo; slices
  *   then conform to the measured clock (granular Stretch or Repitch).
+ *   The clock is either the analog Clock input or incoming MIDI clock
+ *   (24 PPQN); the analog input wins when both are present.
  */
 
 #include <math.h>
@@ -471,6 +474,13 @@ struct _breakSlicer : public _NT_algorithm
 	// clock measurement (for Sync)
 	float			clockPeriod;		// output frames per clock tick, 0 = unknown
 	uint32_t		framesSinceClock;
+
+	// MIDI clock (24 PPQN) as an alternative to the analog Clock input
+	uint32_t		frameClock;			// free-running per-frame counter
+	uint32_t		midiTickCount;		// ticks toward the next quarter measurement
+	uint32_t		midiLastQuarterFrame;	// frameClock at the last quarter boundary
+	uint32_t		midiStepTicks;		// ticks toward the next sequence step
+	bool			midiRunning;		// transport state (Start/Continue vs Stop)
 
 	// slice editor
 	bool			editMode;
@@ -1385,6 +1395,77 @@ void	midiMessage( _NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byt
 		triggerSlice( pThis, idx, idx );		// MIDI note: slice's own position
 }
 
+// MIDI clock (24 PPQN): drives tempo for Sync/ratchet/serpent and, while the
+// transport is running, steps the sequence. The analog Clock input wins if
+// patched (implicit precedence keeps the parameter count down). Realtime bytes
+// are channelless, so the MIDI channel param does not apply here.
+void	midiRealtime( _NT_algorithm* self, uint8_t byte )
+{
+	_breakSlicer* pThis = (_breakSlicer*)self;
+
+	if ( pThis->v[ kParamClockInput ] )		// analog Clock patched: CV wins
+		return;
+
+	switch ( byte )
+	{
+	case 0xF8:		// timing clock tick
+	{
+		// tempo: measure output frames across 24 ticks -> quarter-note period
+		if ( ++pThis->midiTickCount >= 24 )
+		{
+			uint32_t now = pThis->frameClock;
+			uint32_t period = now - pThis->midiLastQuarterFrame;	// wraps cleanly
+			pThis->midiLastQuarterFrame = now;
+			pThis->midiTickCount = 0;
+
+			// accept only a sane quarter note (30..300 bpm) and slew, since
+			// MIDI clock jitters more than an analog edge
+			uint32_t sr = NT_globals.sampleRate;
+			if ( period >= sr / 5 && period <= sr * 2 )
+			{
+				int div = pThis->v[ kParamClockDiv ];
+				float target = clockDivQuarters[ div ] * (float)period;
+				if ( pThis->clockPeriod <= 0.0f )
+					pThis->clockPeriod = target;
+				else
+					pThis->clockPeriod += ( target - pThis->clockPeriod ) * 0.25f;
+			}
+		}
+
+		// stepping: advance every N ticks derived from the Clock div
+		if ( pThis->midiRunning )
+		{
+			int div = pThis->v[ kParamClockDiv ];
+			int ticksPerStep = roundToInt( clockDivQuarters[ div ] * 24.0f );
+			if ( ticksPerStep < 1 )
+				ticksPerStep = 1;
+			if ( ++pThis->midiStepTicks >= (uint32_t)ticksPerStep )
+			{
+				pThis->midiStepTicks = 0;
+				triggerStep( pThis );
+			}
+		}
+	}
+		break;
+	case 0xFA:		// start: pull the sequence back to the top (like Reset)
+		pThis->seqStep = 0;
+		pThis->stepPhase = 0;
+		pThis->ppDir = 1;
+		pThis->shufflePos = 0;
+		pThis->permN = 0;
+		pThis->midiStepTicks = 0;
+		pThis->midiTickCount = 0;
+		pThis->midiRunning = true;
+		break;
+	case 0xFB:		// continue
+		pThis->midiRunning = true;
+		break;
+	case 0xFC:		// stop: let the current slice ring out
+		pThis->midiRunning = false;
+		break;
+	}
+}
+
 // ---------------------------------------------------------------------------
 // rendering
 
@@ -1750,6 +1831,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 			triggerSlice( pThis, idx, idx );		// random: own position
 		}
 		pThis->framesSinceClock++;
+		pThis->frameClock++;		// free-running, for MIDI clock tempo
 		if ( clockBus && risingEdge( clockBus[i], pThis->clockArmed ) )
 		{
 			// measure clock period for Sync (sane range 50ms - 4s)
@@ -2467,7 +2549,7 @@ static const _NT_factory factory =
 	.parameterChanged = parameterChanged,
 	.step = step,
 	.draw = draw,
-	.midiRealtime = NULL,
+	.midiRealtime = midiRealtime,
 	.midiMessage = midiMessage,
 	.tags = kNT_tagInstrument,
 	.hasCustomUi = hasCustomUi,
