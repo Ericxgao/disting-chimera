@@ -2076,8 +2076,10 @@ bool	deserialise( _NT_algorithm* self, _NT_jsonParse& parse )
 // ---------------------------------------------------------------------------
 // display
 
-// one waveform strip in the performance view
-static void drawStrip( _breakSlicer* pThis, int li, int top, int bottom )
+// one waveform strip in the performance view. ampMul (0..1) dims the
+// waveform to reflect this loop's live crossfade level in Xfade blend
+// mode (1.0 elsewhere, i.e. no dimming)
+static void drawStrip( _breakSlicer* pThis, int li, int top, int bottom, float ampMul )
 {
 	Loop& L = pThis->loops[li];
 	int mid = ( top + bottom ) / 2;
@@ -2090,14 +2092,18 @@ static void drawStrip( _breakSlicer* pThis, int li, int top, int bottom )
 
 	float scale = ( L.waveMax > 0.001f ) ? ( ( bottom - top ) * 0.5f ) / L.waveMax : 0.0f;
 
-	// waveform
+	// waveform: brightness (2..6) tracks ampMul so a faded-out loop in
+	// an xfade dims without disappearing (slice layout stays visible)
+	int waveColour = 2 + (int)( ampMul * 4.0f + 0.5f );
+	if ( waveColour > 6 ) waveColour = 6;
+	if ( waveColour < 2 ) waveColour = 2;
 	for ( int b=0; b<kWaveBuckets; ++b )
 	{
 		int h = (int)( L.wave[ b ] * scale );
 		if ( h > ( bottom - top ) / 2 )
 			h = ( bottom - top ) / 2;
 		int x = b * 2;
-		NT_drawShapeI( kNT_line, x, mid - h, x, mid + h, 6 );
+		NT_drawShapeI( kNT_line, x, mid - h, x, mid + h, waveColour );
 	}
 
 	// slice markers + lock flags
@@ -2149,13 +2155,13 @@ bool	draw( _NT_algorithm* self )
 
 	if ( twoLoops )
 	{
-		drawStrip( pThis, 0, 15, 37 );
-		drawStrip( pThis, 1, 40, 62 );
+		drawStrip( pThis, 0, 15, 37, pThis->xfA );
+		drawStrip( pThis, 1, 40, 62, pThis->xfB );
 		NT_drawText( 254, 22, "LION", 6, kNT_textRight, kNT_textTiny );
 		NT_drawText( 254, 47, "GOAT", 6, kNT_textRight, kNT_textTiny );
 	}
 	else
-		drawStrip( pThis, 0, 18, 62 );
+		drawStrip( pThis, 0, 18, 62, 1.0f );
 
 	bool analysing = ( pThis->loops[0].loaded && !pThis->loops[0].analysed )
 		|| ( twoLoops && pThis->loops[1].loaded && !pThis->loops[1].analysed );
@@ -2166,6 +2172,18 @@ bool	draw( _NT_algorithm* self )
 		NT_drawText( 254, 30, "tamed", 15, kNT_textRight, kNT_textTiny );
 	else if ( analysing && pThis->v[ kParamSliceMode ] )
 		NT_drawText( 254, 30, "analysing", 8, kNT_textRight, kNT_textTiny );
+	else if ( twoLoops && pThis->v[ kParamBlendMode ] && pThis->curB.active )
+	{
+		// Xfade: both loops are sounding, so show each one's current
+		// slice over its own strip instead of a single corner label
+		char buf[24];
+		int n = formatSliceLabel( buf, pThis->cur.sliceIdx, pThis->loops[0].numSlices, pThis->v[ kParamBars ] + 1 );
+		buf[n] = 0;
+		NT_drawText( 0, 22, buf, 8, kNT_textLeft, kNT_textTiny );
+		n = formatSliceLabel( buf, pThis->curB.sliceIdx, pThis->loops[1].numSlices, pThis->v[ kParamBars ] + 1 );
+		buf[n] = 0;
+		NT_drawText( 0, 47, buf, 8, kNT_textLeft, kNT_textTiny );
+	}
 	else if ( pThis->cur.active )
 	{
 		char buf[32];
