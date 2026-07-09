@@ -81,6 +81,9 @@ enum
 	kNumRoles,
 };
 
+static const int kNumBeefSlots = kNumRoles - 1;	// one per role, excluding None
+static const int kNumLoadSlots = kNumLoops + kNumBeefSlots;	// loops + beef one-shots share the loader
+
 // display initial per role ('\0' = untagged, nothing drawn)
 static const char kRoleInitials[ kNumRoles ] = { 0, 'K', 'S', 'P', 'H', 'C' };
 
@@ -211,6 +214,24 @@ enum
 
 	kParamPattern,
 
+	// beef: one-shots layered on role-tagged slices, straight (no fx)
+	kParamBeefFolder,
+	kParamBeefSampleKick,
+	kParamBeefLevelKick,
+	kParamBeefDuckKick,
+	kParamBeefSampleSnare,
+	kParamBeefLevelSnare,
+	kParamBeefDuckSnare,
+	kParamBeefSamplePerc,
+	kParamBeefLevelPerc,
+	kParamBeefDuckPerc,
+	kParamBeefSampleHat,
+	kParamBeefLevelHat,
+	kParamBeefDuckHat,
+	kParamBeefSampleCrash,
+	kParamBeefLevelCrash,
+	kParamBeefDuckCrash,
+
 	kNumParams,
 };
 
@@ -304,7 +325,7 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Drive", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
 	{ .name = "Select mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = selectModeStrings },
-	{ .name = "Select offset", .min = 0, .max = 127, .def = 36, .unit = kNT_unitMIDINote, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Select offset", .min = 0, .max = 127, .def = 12, .unit = kNT_unitMIDINote, .scaling = 0, .enumStrings = NULL },
 
 	{ .name = "Lion level", .min = -40, .max = 6, .def = 0, .unit = kNT_unitDb, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Lion rate", .min = 25, .max = 400, .def = 100, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
@@ -322,6 +343,23 @@ static const _NT_parameter parameters[] = {
 	{ .name = "LPG res", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
 	{ .name = "Pattern", .min = 0, .max = kNumPatterns - 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = patternStrings },
+
+	{ .name = "Beef folder", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitHasStrings, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Kick sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Kick level", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Kick duck", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Snare sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Snare level", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Snare duck", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Perc sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Perc level", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Perc duck", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Hat sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Hat level", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Hat duck", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Crash sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Crash level", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Crash duck", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
 static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamBars };
@@ -332,6 +370,14 @@ static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, k
 static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak, kParamBackbeat };
 static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive, kParamLpg, kParamLpgDecay, kParamLpgRes };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
+static const uint8_t pageBeef[] = {
+	kParamBeefFolder,
+	kParamBeefSampleKick, kParamBeefLevelKick, kParamBeefDuckKick,
+	kParamBeefSampleSnare, kParamBeefLevelSnare, kParamBeefDuckSnare,
+	kParamBeefSamplePerc, kParamBeefLevelPerc, kParamBeefDuckPerc,
+	kParamBeefSampleHat, kParamBeefLevelHat, kParamBeefDuckHat,
+	kParamBeefSampleCrash, kParamBeefLevelCrash, kParamBeefDuckCrash,
+};
 
 static const _NT_parameterPage pages[] = {
 	{ .name = "Sample", .numParams = ARRAY_SIZE(pageSample), .params = pageSample },
@@ -341,6 +387,7 @@ static const _NT_parameterPage pages[] = {
 	{ .name = "Sequence", .numParams = ARRAY_SIZE(pageSeq), .params = pageSeq },
 	{ .name = "FX", .numParams = ARRAY_SIZE(pageFx), .params = pageFx },
 	{ .name = "FX setup", .numParams = ARRAY_SIZE(pageFxSetup), .params = pageFxSetup },
+	{ .name = "Beef", .numParams = ARRAY_SIZE(pageBeef), .params = pageBeef },
 	{ .name = "Routing", .numParams = ARRAY_SIZE(pageRouting), .params = pageRouting },
 };
 
@@ -353,11 +400,21 @@ static const _NT_parameterPages parameterPages = {
 static const uint8_t loopFolderParam[ kNumLoops ] = { kParamFolder, kParamFolderB };
 static const uint8_t loopSampleParam[ kNumLoops ] = { kParamSample, kParamSampleB };
 
+// beef slot index (0..kNumBeefSlots-1) <-> role (kRoleKick..kRoleCrash) is slot+1.
+// all slots share one folder; each has its own sample/level/duck.
+static const uint8_t beefSampleParam[ kNumBeefSlots ] = {
+	kParamBeefSampleKick, kParamBeefSampleSnare, kParamBeefSamplePerc, kParamBeefSampleHat, kParamBeefSampleCrash };
+static const uint8_t beefLevelParam[ kNumBeefSlots ] = {
+	kParamBeefLevelKick, kParamBeefLevelSnare, kParamBeefLevelPerc, kParamBeefLevelHat, kParamBeefLevelCrash };
+static const uint8_t beefDuckParam[ kNumBeefSlots ] = {
+	kParamBeefDuckKick, kParamBeefDuckSnare, kParamBeefDuckPerc, kParamBeefDuckHat, kParamBeefDuckCrash };
+
 // ---------------------------------------------------------------------------
 // specifications
 
 static const _NT_specification specifications[] = {
 	{ .name = "Max length", .min = 1, .max = 32, .def = 8, .type = kNT_typeSeconds },
+	{ .name = "Beef length", .min = 1, .max = 8, .def = 2, .type = kNT_typeSeconds },
 };
 
 // ---------------------------------------------------------------------------
@@ -451,6 +508,16 @@ struct Loop
 	float		waveMax;
 };
 
+// one Beef layer: a one-shot sample layered on top of a drum-role tag,
+// played straight (no fx) with its own level and an original-slice duck
+struct OneShot
+{
+	float*		sample;		// DRAM: interleaved stereo floats
+	bool		loaded;
+	uint32_t	numFrames;
+	float		srRatio;	// file rate / host rate
+};
+
 // ---------------------------------------------------------------------------
 // algorithm
 
@@ -464,12 +531,16 @@ struct _breakSlicer : public _NT_algorithm
 	Loop			loops[ kNumLoops ];
 	uint32_t		capFrames;			// per-loop buffer capacity in frames
 
-	// sample loading (one read at a time)
+	OneShot			beefSample[ kNumBeefSlots ];	// one per role: Kick, Snare, Perc, Hat, Crash
+	uint32_t		beefCapFrames;					// per-one-shot buffer capacity in frames
+
+	// sample loading (one read at a time). slots 0..kNumLoops-1 are the
+	// loops, kNumLoops..kNumLoops+kNumBeefSlots-1 are the beef one-shots
 	_NT_wavRequest	request;
 	bool			cardMounted;
 	bool			awaitingCallback;
-	int				loadingLoop;
-	bool			queuedLoad[ kNumLoops ];
+	int				loadingSlot;
+	bool			queuedLoad[ kNumLoadSlots ];
 
 	// triggering
 	bool			trigArmed, randArmed, clockArmed, resetArmed;
@@ -531,6 +602,7 @@ struct _breakSlicer : public _NT_algorithm
 	int				editLoop;
 	int				selPoint;			// selected slice point, 0..numSlices-1
 	float			zoomPot;			// 0..1 -> 1x..256x
+	uint8_t			lastControl;		// most recently used editor control, for the legend highlight
 
 	// cached parameter values
 	float			gain, gainTarget;
@@ -546,6 +618,12 @@ struct _breakSlicer : public _NT_algorithm
 	Voice			cur, fade;		// primary layer (chance mode; loop A in xfade)
 	Voice			curB, fadeB;	// second layer, used only in xfade blend mode
 	float			xfA, xfB;		// smoothed crossfade amplitudes
+
+	// beef: a one-shot layered on top of a role-tagged slice, straight (no fx)
+	Voice			beefVoice, beefFadeVoice;
+	float			beefAmp, beefFadeAmp;		// Level% captured at trigger time
+	float			beefDuck;					// Duck% for the current beefVoice's role
+
 	Rng				rng;
 };
 
@@ -655,11 +733,13 @@ void	calculateRequirements( _NT_algorithmRequirements& req, const int32_t* speci
 {
 	uint32_t capFrames = (uint32_t)specifications[0] * 48000;
 	uint32_t numHops = capFrames / kAnalysisHop + 2;
+	uint32_t beefCapFrames = (uint32_t)specifications[1] * 48000;
 
 	req.numParameters = kNumParams;
 	req.sram = sizeof(_breakSlicer);
 	req.dram = kNumLoops * ( capFrames * 2 * sizeof(float) + 2 * numHops * sizeof(float) )
-		+ kEchoFrames * 2 * sizeof(float);
+		+ kEchoFrames * 2 * sizeof(float)
+		+ kNumBeefSlots * beefCapFrames * 2 * sizeof(float);
 	req.dtc = 0;
 	req.itc = 0;
 }
@@ -668,9 +748,16 @@ static void wavCallback( void* callbackData, bool success )
 {
 	_breakSlicer* pThis = (_breakSlicer*)callbackData;
 	pThis->awaitingCallback = false;
+	int slot = pThis->loadingSlot;
+	if ( success && slot >= kNumLoops )
+	{
+		OneShot& os = pThis->beefSample[ slot - kNumLoops ];
+		os.loaded = true;
+		return;
+	}
 	if ( success )
 	{
-		Loop& L = pThis->loops[ pThis->loadingLoop ];
+		Loop& L = pThis->loops[ slot ];
 		L.loaded = true;
 		L.analysisPos = 0;
 		L.prevHopEnergy = 0.0f;
@@ -705,6 +792,16 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 		dram = L.hopPeak + maxHops;
 		L.srRatio = 1.0f;
 	}
+	uint32_t beefCapFrames = (uint32_t)specifications[1] * 48000;
+	alg->beefCapFrames = beefCapFrames;
+	for ( int bi=0; bi<kNumBeefSlots; ++bi )
+	{
+		OneShot& os = alg->beefSample[bi];
+		os.sample = dram;
+		dram += beefCapFrames * 2;
+		os.srRatio = 1.0f;
+	}
+
 	alg->echo = dram;
 	memset( alg->echo, 0, kEchoFrames * 2 * sizeof(float) );
 	alg->echoTime = 18000.0f;	// 375ms until a clock teaches us better
@@ -782,8 +879,56 @@ static float parseBpmFromName( const char* name )
 	return bpm;
 }
 
-static void startLoad( _breakSlicer* pThis, int li )
+static void startLoadOneShot( _breakSlicer* pThis, int slot )
 {
+	int bi = slot - kNumLoops;
+	OneShot& os = pThis->beefSample[ bi ];
+
+	// sample param 0 = "None": stay unloaded, don't touch DRAM/the loader
+	int sampleIdx = pThis->v[ beefSampleParam[bi] ] - 1;
+	if ( sampleIdx < 0 )
+	{
+		os.loaded = false;
+		if ( pThis->beefVoice.active && pThis->beefVoice.loopIdx == bi )
+			pThis->beefVoice.active = 0;
+		if ( pThis->beefFadeVoice.active && pThis->beefFadeVoice.loopIdx == bi )
+			pThis->beefFadeVoice.active = 0;
+		return;
+	}
+
+	_NT_wavInfo info;
+	NT_getSampleFileInfo( pThis->v[ kParamBeefFolder ], sampleIdx, info );
+	if ( !info.name || !info.numFrames )
+		return;
+
+	os.loaded = false;
+	if ( pThis->beefVoice.active && pThis->beefVoice.loopIdx == bi )
+		pThis->beefVoice.active = 0;
+	if ( pThis->beefFadeVoice.active && pThis->beefFadeVoice.loopIdx == bi )
+		pThis->beefFadeVoice.active = 0;
+
+	os.numFrames = ( info.numFrames < pThis->beefCapFrames ) ? info.numFrames : pThis->beefCapFrames;
+	os.srRatio = info.sampleRate / (float)NT_globals.sampleRate;
+
+	pThis->request.folder = pThis->v[ kParamBeefFolder ];
+	pThis->request.sample = sampleIdx;
+	pThis->request.numFrames = os.numFrames;
+	pThis->request.dst = os.sample;
+
+	pThis->loadingSlot = slot;
+	if ( NT_readSampleFrames( pThis->request ) )
+		pThis->awaitingCallback = true;
+}
+
+static void startLoad( _breakSlicer* pThis, int slot )
+{
+	if ( slot >= kNumLoops )
+	{
+		startLoadOneShot( pThis, slot );
+		return;
+	}
+
+	int li = slot;
 	Loop& L = pThis->loops[ li ];
 
 	_NT_wavInfo info;
@@ -813,17 +958,17 @@ static void startLoad( _breakSlicer* pThis, int li )
 	pThis->request.numFrames = L.numFrames;
 	pThis->request.dst = L.sample;
 
-	pThis->loadingLoop = li;
+	pThis->loadingSlot = li;
 	if ( NT_readSampleFrames( pThis->request ) )
 		pThis->awaitingCallback = true;
 }
 
-static void requestLoad( _breakSlicer* pThis, int li )
+static void requestLoad( _breakSlicer* pThis, int slot )
 {
 	if ( pThis->awaitingCallback )
-		pThis->queuedLoad[ li ] = true;
+		pThis->queuedLoad[ slot ] = true;
 	else
-		startLoad( pThis, li );
+		startLoad( pThis, slot );
 }
 
 int 	parameterString( _NT_algorithm* self, int p, int v, char* buff )
@@ -852,6 +997,41 @@ int 	parameterString( _NT_algorithm* self, int p, int v, char* buff )
 		int folderParam = ( p == kParamSample ) ? kParamFolder : kParamFolderB;
 		_NT_wavInfo info;
 		NT_getSampleFileInfo( pThis->v[ folderParam ], v, info );
+		if ( info.name )
+		{
+			strncpy( buff, info.name, kNT_parameterStringSize-1 );
+			buff[ kNT_parameterStringSize-1 ] = 0;
+			len = strlen( buff );
+		}
+	}
+		break;
+	case kParamBeefFolder:
+	{
+		_NT_wavFolderInfo folderInfo;
+		NT_getSampleFolderInfo( v, folderInfo );
+		if ( folderInfo.name )
+		{
+			strncpy( buff, folderInfo.name, kNT_parameterStringSize-1 );
+			buff[ kNT_parameterStringSize-1 ] = 0;
+			len = strlen( buff );
+		}
+	}
+		break;
+	case kParamBeefSampleKick:
+	case kParamBeefSampleSnare:
+	case kParamBeefSamplePerc:
+	case kParamBeefSampleHat:
+	case kParamBeefSampleCrash:
+	{
+		if ( v == 0 )
+		{
+			strncpy( buff, "None", kNT_parameterStringSize-1 );
+			buff[ kNT_parameterStringSize-1 ] = 0;
+			len = strlen( buff );
+			break;
+		}
+		_NT_wavInfo info;
+		NT_getSampleFileInfo( pThis->v[ kParamBeefFolder ], v - 1, info );
 		if ( info.name )
 		{
 			strncpy( buff, info.name, kNT_parameterStringSize-1 );
@@ -947,6 +1127,31 @@ void	parameterChanged( _NT_algorithm* self, int p )
 	case kParamSampleB:
 		if ( pThis->v[ kParamLoops ] )
 			requestLoad( pThis, 1 );
+		break;
+	case kParamBeefFolder:
+	{
+		_NT_wavFolderInfo folderInfo;
+		NT_getSampleFolderInfo( pThis->v[ kParamBeefFolder ], folderInfo );
+		int maxIdx = folderInfo.numSampleFiles;	// 0 = None, 1..N = files
+		for ( int bi=0; bi<kNumBeefSlots; ++bi )
+		{
+			pThis->params[ beefSampleParam[bi] ].max = maxIdx;
+			NT_updateParameterDefinition( NT_algorithmIndex( self ), beefSampleParam[bi] );
+			requestLoad( pThis, kNumLoops + bi );
+		}
+	}
+		break;
+	case kParamBeefSampleKick:
+	case kParamBeefSampleSnare:
+	case kParamBeefSamplePerc:
+	case kParamBeefSampleHat:
+	case kParamBeefSampleCrash:
+	{
+		int bi = 0;
+		while ( beefSampleParam[bi] != p )
+			++bi;
+		requestLoad( pThis, kNumLoops + bi );
+	}
 		break;
 	case kParamSlices:
 	case kParamSliceMode:
@@ -1297,6 +1502,47 @@ static float effectiveBlend( _breakSlicer* pThis )
 // idx is the slice to play; gridPos is the rhythmic position used for the
 // Backbeat weighting (the step phase for clock-driven stepping, the slice's
 // own index for CV / MIDI / Random triggers).
+// beef: layer the role's one-shot on top, straight (no fx), and duck the
+// original slice's voices while it plays
+static void startBeefVoice( _breakSlicer* pThis, int role )
+{
+	if ( role <= kRoleNone || role >= kNumRoles )
+		return;
+	int bi = role - 1;
+	OneShot& os = pThis->beefSample[ bi ];
+	if ( !os.loaded || os.numFrames < 2 )
+		return;
+	float level = pThis->v[ beefLevelParam[bi] ] / 100.0f;
+	if ( level <= 0.0f )
+		return;
+
+	// choke: current beef voice moves to the fade slot
+	if ( pThis->beefVoice.active )
+	{
+		pThis->beefFadeVoice = pThis->beefVoice;
+		pThis->beefFadeVoice.envTarget = 0.0f;
+		pThis->beefFadeAmp = pThis->beefAmp;
+	}
+
+	Voice& v = pThis->beefVoice;
+	memset( &v, 0, sizeof(Voice) );
+	v.active = 1;
+	v.loopIdx = (uint8_t)bi;
+	v.buf = os.sample;
+	v.bufFrames = os.numFrames;
+	v.start = 0;
+	v.end = os.numFrames;
+	v.dir = 1.0f;
+	v.rate = os.srRatio;
+	v.pos = 0.0f;
+	v.env = 0.0f;
+	v.envTarget = 1.0f;
+	v.framesLeft = (float)os.numFrames / v.rate;
+
+	pThis->beefAmp = level;
+	pThis->beefDuck = pThis->v[ beefDuckParam[bi] ] / 100.0f;
+}
+
 static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos )
 {
 	const int16_t* pv = pThis->v;
@@ -1325,6 +1571,11 @@ static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos )
 		}
 		startVoice( pThis, pThis->cur, pThis->fade, lp, idx, rolls );
 	}
+
+	// beef: role tag always comes from the canonical (master) loop's layout
+	Loop* roleLp = pThis->loops[0].sliced ? &pThis->loops[0] : &pThis->loops[1];
+	if ( idx >= 0 && idx < roleLp->numSlices )
+		startBeefVoice( pThis, roleLp->sliceRole[ idx ] );
 
 	pThis->lastSlice = idx;
 }
@@ -1846,12 +2097,12 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	// kick queued loads
 	if ( !pThis->awaitingCallback )
 	{
-		for ( int li=0; li<kNumLoops; ++li )
+		for ( int slot=0; slot<kNumLoadSlots; ++slot )
 		{
-			if ( pThis->queuedLoad[ li ] )
+			if ( pThis->queuedLoad[ slot ] )
 			{
-				pThis->queuedLoad[ li ] = false;
-				startLoad( pThis, li );
+				pThis->queuedLoad[ slot ] = false;
+				startLoad( pThis, slot );
 				break;
 			}
 		}
@@ -2004,12 +2255,18 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		float ampA = xfA * lgA;
 		float ampB = xfB * lgB;
 
+		// beef duck: the current one-shot's own envelope drives how hard the
+		// original slice ducks, so it attacks/releases in step with the hit
+		float duckMul = 1.0f - pThis->beefDuck * pThis->beefVoice.env;
+
 		float l = 0.0f, r = 0.0f;
 		float sendL = 0.0f, sendR = 0.0f;
-		renderVoice( pThis->cur, pThis->cur.loopIdx ? ampB : ampA, l, r, sendL, sendR );
-		renderVoice( pThis->fade, pThis->fade.loopIdx ? ampB : ampA, l, r, sendL, sendR );
-		renderVoice( pThis->curB, ampB, l, r, sendL, sendR );
-		renderVoice( pThis->fadeB, ampB, l, r, sendL, sendR );
+		renderVoice( pThis->cur, ( pThis->cur.loopIdx ? ampB : ampA ) * duckMul, l, r, sendL, sendR );
+		renderVoice( pThis->fade, ( pThis->fade.loopIdx ? ampB : ampA ) * duckMul, l, r, sendL, sendR );
+		renderVoice( pThis->curB, ampB * duckMul, l, r, sendL, sendR );
+		renderVoice( pThis->fadeB, ampB * duckMul, l, r, sendL, sendR );
+		renderVoice( pThis->beefVoice, pThis->beefAmp, l, r, sendL, sendR );
+		renderVoice( pThis->beefFadeVoice, pThis->beefFadeAmp, l, r, sendL, sendR );
 
 		// serpent: dub delay tail (darkened feedback, clock-chasing time)
 		{
@@ -2216,12 +2473,27 @@ static void snapZero( _breakSlicer* pThis, Loop& L )
 	L.manualSlices = true;
 }
 
+// editor controls tracked for the legend's "last used" highlight
+enum
+{
+	kCtrlNone,
+	kCtrlEncLTurn,
+	kCtrlEncLPush,
+	kCtrlEncRTurn,
+	kCtrlEncRPush,
+	kCtrlB2,
+	kCtrlB4,
+	kCtrlPotL,
+	kCtrlPotC,
+	kCtrlPotR,
+};
+
 uint32_t	hasCustomUi( _NT_algorithm* self )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
 	uint32_t mask = kNT_button1 | kNT_button3;	// button 1 held = tame
 	if ( pThis->editMode )
-		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potButtonC | kNT_potR;
+		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potButtonL | kNT_potButtonC | kNT_potR;
 	return mask;
 }
 
@@ -2258,6 +2530,7 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 			L = &pThis->loops[ pThis->editLoop ];
 			if ( pThis->selPoint >= L->numSlices )
 				pThis->selPoint = L->numSlices - 1;
+			pThis->lastControl = kCtrlB2;
 		}
 	}
 
@@ -2272,29 +2545,62 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 		if ( s < 0 ) s = last;
 		if ( s > last ) s = 0;
 		pThis->selPoint = s;
+		pThis->lastControl = kCtrlEncLTurn;
 	}
 
 	if ( data.encoders[1] && pThis->selPoint >= 1 )
+	{
 		nudgeSelected( pThis, *L, data.encoders[1] );
+		pThis->lastControl = kCtrlEncRTurn;
+	}
 
 	if ( pressed & kNT_encoderButtonR && pThis->selPoint >= 1 )
+	{
 		snapSelected( pThis, *L );
+		pThis->lastControl = kCtrlEncRPush;
+	}
 
 	if ( pressed & kNT_button4 && pThis->selPoint >= 1 )
+	{
 		snapZero( pThis, *L );
+		pThis->lastControl = kCtrlB4;
+	}
 
 	if ( pressed & kNT_encoderButtonL )
+	{
+		// preview the selected slice straight, no FX rolled
+		FxRolls straight = {};
+		startVoice( pThis, pThis->cur, pThis->fade, L, pThis->selPoint, straight );
+		pThis->lastControl = kCtrlEncLPush;
+	}
+
+	if ( pressed & kNT_potButtonL )
+	{
 		L->lockMask ^= 1u << pThis->selPoint;	// lock slice starting at this point
+		pThis->lastControl = kCtrlPotL;
+	}
 
 	if ( pressed & kNT_potButtonC )
 	{
 		// cycle the selected slice's drum-role tag (None -> K -> S -> P -> H -> C)
 		uint8_t& role = L->sliceRole[ pThis->selPoint ];
 		role = (uint8_t)( ( role + 1 ) % kNumRoles );
+		pThis->lastControl = kCtrlPotC;
+	}
+	else if ( data.controls & kNT_potC )
+	{
+		// sweep the pot to set the role directly from its position
+		int role = (int)( data.pots[1] * kNumRoles );
+		if ( role >= kNumRoles ) role = kNumRoles - 1;
+		L->sliceRole[ pThis->selPoint ] = (uint8_t)role;
+		pThis->lastControl = kCtrlPotC;
 	}
 
 	if ( data.controls & kNT_potR )
+	{
 		pThis->zoomPot = data.pots[2];
+		pThis->lastControl = kCtrlPotR;
+	}
 }
 
 void	setupUi( _NT_algorithm* self, _NT_float3& pots )
@@ -2364,6 +2670,32 @@ static float rangePeak( Loop& L, uint32_t f0, uint32_t f1 )
 	return peak;
 }
 
+// one legend entry: its label and the lastControl id that highlights it
+struct LegendToken { const char* text; uint8_t ctrl; };
+
+// lays out a row of legend tokens, brightening whichever one matches
+// lastControl. tiny font is a fixed 3x5 glyph + 1px gap => 4px advance
+static void drawTokenRow( int anchorX, int y, _NT_textAlignment groupAlign, uint8_t lastControl, const LegendToken* tokens, int count )
+{
+	const int kCharW = 4;
+	int totalChars = 0;
+	for ( int i=0; i<count; ++i )
+	{
+		totalChars += (int)strlen( tokens[i].text );
+		if ( i ) totalChars += 1;	// inter-token space
+	}
+	int totalW = totalChars * kCharW;
+	int x = anchorX;
+	if ( groupAlign == kNT_textCentre ) x -= totalW / 2;
+	else if ( groupAlign == kNT_textRight ) x -= totalW;
+	for ( int i=0; i<count; ++i )
+	{
+		int colour = ( tokens[i].ctrl != kCtrlNone && tokens[i].ctrl == lastControl ) ? 15 : 8;
+		NT_drawText( x, y, tokens[i].text, colour, kNT_textLeft, kNT_textTiny );
+		x += ( (int)strlen( tokens[i].text ) + 1 ) * kCharW;
+	}
+}
+
 static bool drawEditor( _breakSlicer* pThis )
 {
 	Loop& L = pThis->loops[ pThis->editLoop ];
@@ -2371,8 +2703,10 @@ static bool drawEditor( _breakSlicer* pThis )
 	uint32_t visStart, visFrames;
 	editorView( pThis, L, visStart, visFrames );
 
-	// bottom 8px reserved for the control legend
-	const int top = 14, bottom = 54, mid = ( top + bottom ) / 2;
+	// bottom ~19px reserved: our own control legend, plus clearance below it
+	// for the host's own footer bar (algorithm name + control hint), which
+	// draws over the very bottom of the screen independent of our content
+	const int top = 14, bottom = 45, mid = ( top + bottom ) / 2;
 	float scale = ( L.waveMax > 0.001f ) ? ( ( bottom - top ) * 0.5f ) / L.waveMax : 0.0f;
 
 	// waveform at current zoom
@@ -2449,18 +2783,30 @@ static bool drawEditor( _breakSlicer* pThis )
 		NT_drawText( 254, 10, L.manualSlices ? "edited" : "edit", 8, kNT_textRight, kNT_textTiny );
 	}
 
-	// control legend: EncL (always) / centre buttons (context) / EncR (needs a movable point)
+	// control legend: EncL (always) / centre taps (context) / EncR (needs a movable point).
+	// whichever token matches pThis->lastControl draws brighter
 	{
 		bool pointEditable = pThis->selPoint >= 1;
-		NT_drawText( 0, 62, "EncL:Sel Push:Lock PotC:Role", 8, kNT_textLeft, kNT_textTiny );
-		if ( pThis->v[ kParamLoops ] && pointEditable )
-			NT_drawText( 128, 62, "B2:Loop  B4:Zero", 8, kNT_textCentre, kNT_textTiny );
-		else if ( pThis->v[ kParamLoops ] )
-			NT_drawText( 128, 62, "B2:Loop", 8, kNT_textCentre, kNT_textTiny );
-		else if ( pointEditable )
-			NT_drawText( 128, 62, "B4:Zero", 8, kNT_textCentre, kNT_textTiny );
+		const int encY = 62;	// encoders back at the original bottom row
+		const int potY = 53;	// pots/buttons staggered above, clear of the host's footer bar
+
+		LegendToken left[] = { { "EncL:Sel", kCtrlEncLTurn }, { "Push:Prev", kCtrlEncLPush } };
+		drawTokenRow( 0, encY, kNT_textLeft, pThis->lastControl, left, 2 );
+
+		LegendToken centre[4] = { { "PotL:Lock", kCtrlPotL }, { "PotC:Role", kCtrlPotC }, { "PotR:Zoom", kCtrlPotR } };
+		int nc = 3;
+		if ( pThis->v[ kParamLoops ] )
+			centre[nc++] = { "B2:Swap", kCtrlB2 };
+		drawTokenRow( 128, potY, kNT_textCentre, pThis->lastControl, centre, nc );
+
+		LegendToken exitTok[] = { { "B3:Exit", kCtrlNone } };
+		drawTokenRow( 256, potY, kNT_textRight, pThis->lastControl, exitTok, 1 );
+
 		if ( pointEditable )
-			NT_drawText( 256, 62, "EncR:Nudge Push:Snap", 8, kNT_textRight, kNT_textTiny );
+		{
+			LegendToken right[] = { { "EncR:Nudge", kCtrlEncRTurn }, { "Push:Snap", kCtrlEncRPush } };
+			drawTokenRow( 256, encY, kNT_textRight, pThis->lastControl, right, 2 );
+		}
 	}
 
 	return true;	// suppress the standard parameter line
@@ -2647,6 +2993,16 @@ static void drawStrip( _breakSlicer* pThis, int li, int top, int bottom, float a
 	}
 }
 
+// text with a 1px black halo, so it stays legible sitting on top of a waveform
+static void drawOutlinedText( int x, int y, const char* str, int colour, _NT_textAlignment align )
+{
+	static const int dx[] = { -1, 0, 1, -1, 1, -1, 0, 1 };
+	static const int dy[] = { -1, -1, -1, 0, 0, 1, 1, 1 };
+	for ( int i=0; i<8; ++i )
+		NT_drawText( x + dx[i], y + dy[i], str, 0, align, kNT_textTiny );
+	NT_drawText( x, y, str, colour, align, kNT_textTiny );
+}
+
 bool	draw( _NT_algorithm* self )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
@@ -2667,8 +3023,8 @@ bool	draw( _NT_algorithm* self )
 	{
 		drawStrip( pThis, 0, 15, 37, pThis->xfA );
 		drawStrip( pThis, 1, 40, 62, pThis->xfB );
-		NT_drawText( 254, 22, "LION", 6, kNT_textRight, kNT_textTiny );
-		NT_drawText( 254, 47, "GOAT", 6, kNT_textRight, kNT_textTiny );
+		drawOutlinedText( 128, 26, "LION", 12, kNT_textCentre );
+		drawOutlinedText( 128, 51, "GOAT", 12, kNT_textCentre );
 	}
 	else
 		drawStrip( pThis, 0, 18, 62, 1.0f );
@@ -2676,37 +3032,11 @@ bool	draw( _NT_algorithm* self )
 	bool analysing = ( pThis->loops[0].loaded && !pThis->loops[0].analysed )
 		|| ( twoLoops && pThis->loops[1].loaded && !pThis->loops[1].analysed );
 
-	// y=30: the host draws its own icon in the top-right corner above here,
-	// and this needs to clear the LION label (y=22) in two-loop mode too
+	// y=30: the host draws its own icon in the top-right corner above here
 	if ( pThis->tamed )
 		NT_drawText( 254, 30, "tamed", 15, kNT_textRight, kNT_textTiny );
 	else if ( analysing && pThis->v[ kParamSliceMode ] )
 		NT_drawText( 254, 30, "analysing", 8, kNT_textRight, kNT_textTiny );
-	else if ( twoLoops && pThis->v[ kParamBlendMode ] && pThis->curB.active )
-	{
-		// Xfade: both loops are sounding, so show each one's current
-		// slice over its own strip instead of a single corner label
-		char buf[24];
-		int n = formatSliceLabel( buf, pThis->cur.sliceIdx, pThis->loops[0].numSlices, pThis->v[ kParamBars ] + 1 );
-		buf[n] = 0;
-		NT_drawText( 0, 22, buf, 8, kNT_textLeft, kNT_textTiny );
-		n = formatSliceLabel( buf, pThis->curB.sliceIdx, pThis->loops[1].numSlices, pThis->v[ kParamBars ] + 1 );
-		buf[n] = 0;
-		NT_drawText( 0, 47, buf, 8, kNT_textLeft, kNT_textTiny );
-	}
-	else if ( pThis->cur.active )
-	{
-		char buf[32];
-		int n = 0;
-		if ( twoLoops )
-		{
-			const char* head = pThis->cur.loopIdx ? "Goat " : "Lion ";
-			while ( *head )
-				buf[n++] = *head++;
-		}
-		formatSliceLabel( buf + n, pThis->cur.sliceIdx, pThis->loops[ pThis->cur.loopIdx ].numSlices, pThis->v[ kParamBars ] + 1 );
-		NT_drawText( 254, 30, buf, 8, kNT_textRight, kNT_textTiny );
-	}
 
 	if ( pThis->v[ kParamSync ] && pThis->clockPeriod > 0.0f )
 	{
