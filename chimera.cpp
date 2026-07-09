@@ -449,6 +449,7 @@ struct _breakSlicer : public _NT_algorithm
 	bool			trigArmed, randArmed, clockArmed, resetArmed;
 	int				seqStep;
 	int				stepPhase;			// rhythmic grid position since Reset (for Backbeat)
+	int				roleRandomPhase;	// groove-slot scan for Role random mode
 	int				lastSlice;			// most recently triggered slice
 	int				ppDir;				// ping-pong direction
 	int				shufflePos;
@@ -1316,15 +1317,21 @@ static int expectedRole( int gridPos, int n, int beats, int spb )
 	return ( beat & 1 ) ? kRoleSnare : kRoleKick;
 }
 
-// pick the slice a Random input trigger should play
-static int randomSlice( _breakSlicer* pThis )
+// pick the slice a Random input trigger should play. gridPos receives the
+// rhythmic position for Backbeat weighting: the slice's own index for Free /
+// Beat, or the scanned groove slot for Role.
+static int randomSlice( _breakSlicer* pThis, int& gridPos )
 {
 	int n = canonicalSlices( pThis );
 	if ( n < 1 )
 		n = 1;
 	int mode = pThis->v[ kParamRandomMode ];
 	if ( mode == 0 )
-		return pThis->rng.next() % n;
+	{
+		int idx = pThis->rng.next() % n;
+		gridPos = idx;
+		return idx;
+	}
 
 	int beats = ( pThis->v[ kParamBars ] + 1 ) * 4;		// 4/4 assumed
 	int spb = n / beats;								// slices per beat
@@ -1333,13 +1340,15 @@ static int randomSlice( _breakSlicer* pThis )
 
 	if ( mode == 2 )
 	{
-		// Role mode: scan the groove template by grid position (advancing from
-		// the last Reset), pick a random slice carrying the expected tag, and
-		// fall back to any slice when that tag pool is empty
+		// Role mode: scan the groove template by grid position, advancing a
+		// dedicated phase (kept separate from the clock/MIDI stepPhase so a
+		// Random pulse never shifts the clocked sequence). Pick a random slice
+		// carrying the expected tag; fall back to any when the pool is empty.
 		Loop* rl = canonicalLoop( pThis );
-		int gridPos = pThis->stepPhase % n;
-		pThis->stepPhase = ( pThis->stepPhase + 1 ) % n;
-		int want = expectedRole( gridPos, n, beats, spb );
+		int slot = pThis->roleRandomPhase % n;
+		pThis->roleRandomPhase = ( pThis->roleRandomPhase + 1 ) % n;
+		gridPos = slot;								// weight Backbeat by the groove slot
+		int want = expectedRole( slot, n, beats, spb );
 		int count = 0;
 		for ( int i=0; i<n; ++i )
 			if ( rl->sliceRole[i] == want )
@@ -1362,7 +1371,10 @@ static int randomSlice( _breakSlicer* pThis )
 	int groups = n / spb;
 	int phase = pThis->lastSlice % spb;
 	int idx = ( pThis->rng.next() % groups ) * spb + phase;
-	return ( idx < n ) ? idx : pThis->lastSlice;
+	if ( idx >= n )
+		idx = pThis->lastSlice;
+	gridPos = idx;
+	return idx;
 }
 
 // advance the clock-follow sequence, returning the slice to play
@@ -1512,6 +1524,7 @@ void	midiRealtime( _NT_algorithm* self, uint8_t byte )
 	case 0xFA:		// start: pull the sequence back to the top (like Reset)
 		pThis->seqStep = 0;
 		pThis->stepPhase = 0;
+		pThis->roleRandomPhase = 0;
 		pThis->ppDir = 1;
 		pThis->shufflePos = 0;
 		pThis->permN = 0;
@@ -1859,6 +1872,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		{
 			pThis->seqStep = 0;
 			pThis->stepPhase = 0;
+			pThis->roleRandomPhase = 0;
 			pThis->ppDir = 1;
 			pThis->shufflePos = 0;
 			pThis->permN = 0;		// force a fresh shuffle
@@ -1890,8 +1904,9 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		}
 		if ( randBus && risingEdge( randBus[i], pThis->randArmed ) )
 		{
-			int idx = randomSlice( pThis );
-			triggerSlice( pThis, idx, idx );		// random: own position
+			int gp;
+			int idx = randomSlice( pThis, gp );
+			triggerSlice( pThis, idx, gp );
 		}
 		pThis->framesSinceClock++;
 		pThis->frameClock++;		// free-running, for MIDI clock tempo
