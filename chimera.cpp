@@ -1015,13 +1015,14 @@ static float backbeatWeight( _breakSlicer* pThis, int gridPos )
 	int n = canonicalSlices( pThis );
 	if ( n < 1 )
 		return 1.0f;
-	int beats = ( pThis->v[ kParamBars ] + 1 ) * 4;		// 4/4 assumed
-	int spb = n / beats;								// slices per beat
-	if ( spb < 1 )
-		spb = 1;
 	if ( gridPos < 0 )
 		gridPos = 0;
-	int beat = ( gridPos / spb ) % beats;				// 0-based beat in the bar
+	if ( gridPos >= n )
+		gridPos = n - 1;							// CV can address one past the end
+	int beats = ( pThis->v[ kParamBars ] + 1 ) * 4;		// 4/4 assumed
+	// proportional so sparse grids (e.g. 4 slices over 2 bars) land on the
+	// right beats, not just the first few
+	int beat = ( gridPos * beats ) / n;					// 0-based beat in the bar(s)
 	bool backbeat = ( beat & 1 );						// beats 2 & 4 (0-based 1,3)
 	if ( backbeat )
 		return 1.0f;
@@ -1432,18 +1433,18 @@ void	midiRealtime( _NT_algorithm* self, uint8_t byte )
 			}
 		}
 
-		// stepping: advance every N ticks derived from the Clock div
+		// stepping: fire on the first tick after Start (the downbeat), then
+		// every N ticks derived from the Clock div
 		if ( pThis->midiRunning )
 		{
 			int div = pThis->v[ kParamClockDiv ];
 			int ticksPerStep = roundToInt( clockDivQuarters[ div ] * 24.0f );
 			if ( ticksPerStep < 1 )
 				ticksPerStep = 1;
-			if ( ++pThis->midiStepTicks >= (uint32_t)ticksPerStep )
-			{
-				pThis->midiStepTicks = 0;
+			if ( pThis->midiStepTicks == 0 )
 				triggerStep( pThis );
-			}
+			if ( ++pThis->midiStepTicks >= (uint32_t)ticksPerStep )
+				pThis->midiStepTicks = 0;
 		}
 	}
 		break;
@@ -1455,6 +1456,7 @@ void	midiRealtime( _NT_algorithm* self, uint8_t byte )
 		pThis->permN = 0;
 		pThis->midiStepTicks = 0;
 		pThis->midiTickCount = 0;
+		pThis->midiLastQuarterFrame = pThis->frameClock;	// anchor tempo here
 		pThis->midiRunning = true;
 		break;
 	case 0xFB:		// continue
