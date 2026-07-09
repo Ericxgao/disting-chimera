@@ -185,6 +185,10 @@ enum
 
 	kParamBackbeat,
 
+	kParamLpg,
+	kParamLpgDecay,
+	kParamLpgRes,
+
 	kNumParams,
 };
 
@@ -269,6 +273,10 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Goat filter", .min = -100, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
 	{ .name = "Backbeat", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "LPG", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "LPG decay", .min = 0, .max = 100, .def = 30, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "LPG res", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
 static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamBars };
@@ -277,7 +285,7 @@ static const uint8_t pageGoat[] = { kParamFolderB, kParamSampleB, kParamGoatLeve
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
 static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
 static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak, kParamBackbeat };
-static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive };
+static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive, kParamLpg, kParamLpgDecay, kParamLpgRes };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
 
 static const _NT_parameterPage pages[] = {
@@ -343,6 +351,17 @@ struct Voice
 	float		fCoef;			// current frequency coefficient
 	float		fCoefStep;		// per-frame sweep
 	float		svLowL, svBandL, svLowR, svBandR;
+
+	// per-slice low-pass gate (vactrol-style), a second SVF stage struck on
+	// the slice event: env drives cutoff and (skewed) output amplitude together
+	uint8_t		lpgActive;
+	float		lpgEnv;			// 1.0 at strike, decays toward 0
+	float		lpgDecayCoef;	// per-frame multiplier for the decay
+	float		lpgDepth;		// 0..1 dry/gated blend
+	float		lpgDamp;		// SVF damping from resonance
+	float		lpgCoefMin;		// cutoff coef at env 0 (closed)
+	float		lpgCoefMax;		// cutoff coef at env 1 (open)
+	float		lpgLowL, lpgBandL, lpgLowR, lpgBandR;
 };
 
 static const float kFilterDamp = 0.5f;	// SVF damping (some resonance)
@@ -429,6 +448,13 @@ struct _breakSlicer : public _NT_algorithm
 	// drive (soft-clip saturation)
 	float			drivePre;			// input gain into the shaper
 	float			driveMakeup;
+
+	// low-pass gate (per-slice, precomputed from the LPG params)
+	float			lpgDepth;			// 0..1, 0 = off
+	float			lpgDamp;			// SVF damping from LPG res
+	float			lpgCoefMin;			// cutoff coef, gate closed
+	float			lpgCoefMax;			// cutoff coef, gate open
+	float			lpgDecayFrac;		// 0..1 -> short..full-slice decay
 
 	// serpent (dub delay tail)
 	float*			echo;				// DRAM: stereo interleaved ring buffer
@@ -804,12 +830,36 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	NT_setParameterGrayedOut( algIdx, kParamSelectOffset + off, pThis->v[ kParamSelectMode ] == 0 );
 }
 
+// recompute the low-pass gate coefficients from the three LPG params
+static void updateLpg( _breakSlicer* pThis )
+{
+	pThis->lpgDepth = pThis->v[ kParamLpg ] / 100.0f;
+
+	// resonance lowers the SVF damping; the floor keeps hard settings ringing
+	// hard (pinged-filter kicks) without the state exploding
+	float res = pThis->v[ kParamLpgRes ] / 100.0f;
+	pThis->lpgDamp = 1.4f - 1.3f * res;			// 1.4 (none) .. 0.1 (pinged)
+
+	// cutoff sweep: gate closed ~120Hz, open ~9kHz (coef clamped for stability)
+	float k = 6.2831853f / (float)NT_globals.sampleRate;
+	pThis->lpgCoefMin = 2.0f * sinf( 0.5f * k * 120.0f );
+	float cMax = 2.0f * sinf( 0.5f * k * 9000.0f );
+	pThis->lpgCoefMax = ( cMax > 1.0f ) ? 1.0f : cMax;
+
+	pThis->lpgDecayFrac = pThis->v[ kParamLpgDecay ] / 100.0f;
+}
+
 void	parameterChanged( _NT_algorithm* self, int p )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
 
 	switch ( p )
 	{
+	case kParamLpg:
+	case kParamLpgDecay:
+	case kParamLpgRes:
+		updateLpg( pThis );
+		break;
 	case kParamLoops:
 		updateGrayedOut( pThis );
 		if ( pThis->v[ kParamLoops ] && !pThis->loops[1].loaded )
@@ -1153,6 +1203,29 @@ static void startVoice( _breakSlicer* pThis, Voice& voice, Voice& fadeSlot, Loop
 		v.fCoef = pThis->loopFCoef[ li ];
 		v.fCoefStep = 0.0f;
 	}
+
+	// low-pass gate: struck fresh on every slice event, always-on character
+	// (not a die), so it ignores locks. Latch the globals so renderVoice stays
+	// parameter-free; decay is per-strike because it follows the slice length.
+	if ( pThis->lpgDepth > 0.0f )
+	{
+		v.lpgActive = 1;
+		v.lpgEnv = 1.0f;
+		v.lpgDepth = pThis->lpgDepth;
+		v.lpgDamp = pThis->lpgDamp;
+		v.lpgCoefMin = pThis->lpgCoefMin;
+		v.lpgCoefMax = pThis->lpgCoefMax;
+
+		// decay time: ~20ms up to the final slice duration, +/-10% per strike
+		// (vactrol component drift, so runs of slices don't sound identical)
+		float minF = 0.02f * (float)NT_globals.sampleRate;
+		float slice = ( v.framesLeft > minF ) ? v.framesLeft : minF;
+		float t = minF + pThis->lpgDecayFrac * ( slice - minF );
+		t *= 0.9f + 0.2f * pThis->rng.uniform();
+		if ( t < 1.0f )
+			t = 1.0f;
+		v.lpgDecayCoef = expf( -3.5f / t );		// env ~0.03 after t frames
+	}
 }
 
 // Blend with the Quarrel wander applied (the heads fight over the fader)
@@ -1426,6 +1499,28 @@ static inline void renderVoice( Voice& v, float amp, float& outL, float& outR, f
 		float hiR = r - v.svLowR - kFilterDamp * v.svBandR;
 		v.svBandR += c * hiR;
 		r = ( v.fType == 1 ) ? v.svLowR : hiR;
+	}
+
+	// low-pass gate: env drives cutoff, and amplitude follows it with a vactrol
+	// skew (env^1.5), blended against the dry voice by depth
+	if ( v.lpgActive )
+	{
+		v.lpgEnv *= v.lpgDecayCoef;
+		float env = v.lpgEnv;
+		float coef = v.lpgCoefMin + ( v.lpgCoefMax - v.lpgCoefMin ) * env;
+
+		v.lpgLowL += coef * v.lpgBandL;
+		float ghiL = l - v.lpgLowL - v.lpgDamp * v.lpgBandL;
+		v.lpgBandL += coef * ghiL;
+
+		v.lpgLowR += coef * v.lpgBandR;
+		float ghiR = r - v.lpgLowR - v.lpgDamp * v.lpgBandR;
+		v.lpgBandR += coef * ghiR;
+
+		float ampEnv = env * sqrtf( env );			// env^1.5
+		float d = v.lpgDepth;
+		l = l * ( 1.0f - d ) + v.lpgLowL * ampEnv * d;
+		r = r * ( 1.0f - d ) + v.lpgLowR * ampEnv * d;
 	}
 
 	l *= v.env * amp;
