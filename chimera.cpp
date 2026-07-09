@@ -13,7 +13,8 @@
  *   an adjustable root note) sampled on Trigger in rising edge
  *   Random in     -> plays a random slice (Free; Beat: groove-preserving;
  *                    Role: picks a slice tagged for the grid position's role)
- *   Clock in      -> steps through slices (forward/reverse/pingpong/walk/shuffle)
+ *   Clock in      -> steps through slices (forward/reverse/pingpong/walk/
+ *                    shuffle, or Pattern: a groove template of role tags)
  *   Reset in      -> stepping back to slice 1
  *   Ratchet in    -> gate held retrigs current slice at a clock subdivision
  *   MIDI notes from C1 (36) play slices directly
@@ -208,6 +209,8 @@ enum
 	kParamLpgDecay,
 	kParamLpgRes,
 
+	kParamPattern,
+
 	kNumParams,
 };
 
@@ -224,8 +227,29 @@ static const char* const clockDivStrings[] = { "Auto", "1/32", "1/16", "1/8", "1
 static const float clockDivQuarters[] = { 1.0f, 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
 
 static const char* const selectModeStrings[] = { "Linear", "1V/Oct" };
-static const char* const stepModeStrings[] = { "Forward", "Reverse", "PingPong", "Walk", "Shuffle" };
+static const char* const stepModeStrings[] = { "Forward", "Reverse", "PingPong", "Walk", "Shuffle", "Pattern" };
 static const char* const randomModeStrings[] = { "Free", "Beat", "Role" };
+
+// Pattern step mode: classic groove templates mapping the 16 sixteenth-note
+// slots of a bar to a drum role. Pattern mode picks a random slice of the
+// slot's role (falling back to any slice when that tag pool is empty), so a
+// tagged break reassembles into the groove. Blend/Break/dice still apply.
+enum { kPatBoomBap, kPatFourFloor, kPatTwoStep, kPatHalfTime, kNumPatterns };
+static const char* const patternStrings[] = { "Boom-bap", "4-floor", "Two-step", "Half-time" };
+static const uint8_t patternTable[ kNumPatterns ][ 16 ] = {
+	// Boom-bap: kick on 1 and the "and" of 3, snare on 2 & 4, hats between
+	{ kRoleKick,  kRoleHat, kRoleHat, kRoleHat,   kRoleSnare, kRoleHat, kRoleHat, kRoleHat,
+	  kRoleHat,   kRoleHat, kRoleKick, kRoleHat,  kRoleSnare, kRoleHat, kRoleKick, kRoleHat },
+	// Four-on-the-floor: kick every quarter, hats on the offbeat eighths
+	{ kRoleKick,  kRoleHat, kRoleHat, kRoleHat,   kRoleKick,  kRoleHat, kRoleHat, kRoleHat,
+	  kRoleKick,  kRoleHat, kRoleHat, kRoleHat,   kRoleKick,  kRoleHat, kRoleHat, kRoleHat },
+	// DnB two-step: kick on 1, snare on 3, sparse ghost kick, hats between
+	{ kRoleKick,  kRoleHat, kRoleHat, kRoleHat,   kRoleHat,   kRoleHat, kRoleHat, kRoleHat,
+	  kRoleSnare, kRoleHat, kRoleKick, kRoleHat,  kRoleHat,   kRoleHat, kRoleSnare, kRoleHat },
+	// Half-time: kick on 1, snare on 3 only, lots of space (perc fills)
+	{ kRoleKick,  kRolePerc, kRoleHat, kRolePerc, kRolePerc,  kRolePerc, kRoleHat, kRolePerc,
+	  kRoleSnare, kRolePerc, kRoleHat, kRolePerc, kRolePerc,  kRolePerc, kRoleHat, kRolePerc },
+};
 static const char* const ratchetDivStrings[] = { "1/1", "1/2", "1/3", "1/4", "1/8" };
 static const float ratchetDivValues[] = { 1.0f, 2.0f, 3.0f, 4.0f, 8.0f };
 static const char* const midiChannelStrings[] = {
@@ -255,7 +279,7 @@ static const _NT_parameter parameters[] = {
 
 	{ .name = "Sync", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = syncModeStrings },
 	{ .name = "Clock div", .min = 0, .max = 6, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = clockDivStrings },
-	{ .name = "Step mode", .min = 0, .max = 4, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stepModeStrings },
+	{ .name = "Step mode", .min = 0, .max = 5, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stepModeStrings },
 	{ .name = "Random mode", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = randomModeStrings },
 	{ .name = "Ratchet div", .min = 0, .max = 4, .def = 3, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = ratchetDivStrings },
 	{ .name = "MIDI channel", .min = 0, .max = 16, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = midiChannelStrings },
@@ -296,13 +320,15 @@ static const _NT_parameter parameters[] = {
 	{ .name = "LPG", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "LPG decay", .min = 0, .max = 100, .def = 30, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "LPG res", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "Pattern", .min = 0, .max = kNumPatterns - 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = patternStrings },
 };
 
 static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamBars };
 static const uint8_t pageLion[] = { kParamFolder, kParamSample, kParamLionLevel, kParamLionRate, kParamLionPitch, kParamLionFilter };
 static const uint8_t pageGoat[] = { kParamFolderB, kParamSampleB, kParamGoatLevel, kParamGoatRate, kParamGoatPitch, kParamGoatFilter };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
-static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
+static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamPattern, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
 static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak, kParamBackbeat };
 static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive, kParamLpg, kParamLpgDecay, kParamLpgRes };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
@@ -856,6 +882,7 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	NT_setParameterGrayedOut( algIdx, kParamBlendMode + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamQuarrel + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamSelectOffset + off, pThis->v[ kParamSelectMode ] == 0 );
+	NT_setParameterGrayedOut( algIdx, kParamPattern + off, pThis->v[ kParamStepMode ] != 5 );
 }
 
 // recompute the low-pass gate coefficients from the three LPG params
@@ -896,6 +923,7 @@ void	parameterChanged( _NT_algorithm* self, int p )
 			pThis->editLoop = 0;
 		break;
 	case kParamSelectMode:
+	case kParamStepMode:
 		updateGrayedOut( pThis );
 		break;
 	case kParamFolder:
@@ -1317,6 +1345,27 @@ static int expectedRole( int gridPos, int n, int beats, int spb )
 	return ( beat & 1 ) ? kRoleSnare : kRoleKick;
 }
 
+// pick a random slice (0..n-1) carrying role `want` in loop rl; fall back to
+// any slice when that tag pool is empty (sparse-pool policy for Role/Pattern)
+static int pickSliceForRole( _breakSlicer* pThis, Loop* rl, int want, int n )
+{
+	int count = 0;
+	for ( int i=0; i<n; ++i )
+		if ( rl->sliceRole[i] == want )
+			++count;
+	if ( count == 0 )
+		return pThis->rng.next() % n;
+	int k = pThis->rng.next() % count;
+	for ( int i=0; i<n; ++i )
+		if ( rl->sliceRole[i] == want )
+		{
+			if ( k == 0 )
+				return i;
+			--k;
+		}
+	return pThis->rng.next() % n;				// unreachable, safety
+}
+
 // pick the slice a Random input trigger should play. gridPos receives the
 // rhythmic position for Backbeat weighting: the slice's own index for Free /
 // Beat, or the scanned groove slot for Role.
@@ -1349,21 +1398,7 @@ static int randomSlice( _breakSlicer* pThis, int& gridPos )
 		pThis->roleRandomPhase = ( pThis->roleRandomPhase + 1 ) % n;
 		gridPos = slot;								// weight Backbeat by the groove slot
 		int want = expectedRole( slot, n, beats, spb );
-		int count = 0;
-		for ( int i=0; i<n; ++i )
-			if ( rl->sliceRole[i] == want )
-				++count;
-		if ( count == 0 )
-			return pThis->rng.next() % n;
-		int k = pThis->rng.next() % count;
-		for ( int i=0; i<n; ++i )
-			if ( rl->sliceRole[i] == want )
-			{
-				if ( k == 0 )
-					return i;
-				--k;
-			}
-		return pThis->rng.next() % n;			// unreachable, safety
+		return pickSliceForRole( pThis, rl, want, n );
 	}
 
 	// Beat mode: jump to the same position within another beat,
@@ -1433,6 +1468,21 @@ static int nextStep( _breakSlicer* pThis )
 			pThis->shufflePos = 0;
 		}
 		idx = pThis->perm[ pThis->shufflePos++ ];
+		break;
+	case 5:		// pattern: a groove template maps the bar position to a role,
+	{			// then a random slice of that role plays (fallback: any slice)
+		int pos = pThis->seqStep % n;
+		pThis->seqStep = ( pos + 1 ) % n;
+		int bars = pThis->v[ kParamBars ] + 1;
+		int stepsPerBar = n / bars;
+		if ( stepsPerBar < 1 )
+			stepsPerBar = 1;
+		int patIdx = ( ( pos % stepsPerBar ) * 16 ) / stepsPerBar;	// -> 16-step grid
+		if ( patIdx > 15 )
+			patIdx = 15;
+		int want = patternTable[ pThis->v[ kParamPattern ] ][ patIdx ];
+		idx = pickSliceForRole( pThis, canonicalLoop( pThis ), want, n );
+	}
 		break;
 	}
 
