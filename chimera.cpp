@@ -18,7 +18,12 @@
  *   Reset in      -> stepping back to slice 1
  *   Ratchet in    -> gate held retrigs current slice at a clock subdivision
  *   MIDI notes from C1 (36) play slices directly
- *   MIDI clock    -> tempo + transport-driven stepping (if no analog Clock)
+ *   MIDI clock    -> tempo + transport-driven stepping
+ *
+ * Clock source (Sequence page) picks which clock, if any, advances the
+ * sequence: Off (only explicit triggers play), CV (the Clock input) or
+ * MIDI (incoming MIDI clock). Default CV, so the loop never runs off a
+ * host's MIDI clock unless asked. Tempo for Sync is still measured.
  *
  * Two-loop intermingle:
  *   Blend sets the probability that a slice event draws from loop B
@@ -39,8 +44,8 @@
  * Clock sync:
  *   Filename convention "name_<bpm>.wav" gives the loop tempo; slices
  *   then conform to the measured clock (granular Stretch or Repitch).
- *   The clock is either the analog Clock input or incoming MIDI clock
- *   (24 PPQN); the analog input wins when both are present.
+ *   Tempo comes from the analog Clock input, or from MIDI clock when the
+ *   Clock source is set to MIDI (24 PPQN).
  */
 
 #include <math.h>
@@ -232,8 +237,13 @@ enum
 	kParamBeefLevelCrash,
 	kParamBeefDuckCrash,
 
+	kParamClockSource,
+
 	kNumParams,
 };
+
+// which clock, if any, advances the sequence (tempo for Sync is still measured)
+enum { kClockOff, kClockCV, kClockMidi };
 
 static const char* const loopsStrings[] = { "1", "2" };
 static const char* const blendModeStrings[] = { "Chance", "Xfade" };
@@ -242,6 +252,7 @@ static const char* const sliceModeStrings[] = { "Equal", "Transient" };
 static const char* const barsStrings[] = { "1", "2" };
 static const char* const stutterDivStrings[] = { "1/2", "1/4", "1/8", "1/16", "Random" };
 static const char* const syncModeStrings[] = { "Off", "Stretch", "Repitch" };
+static const char* const clockSourceStrings[] = { "Off", "CV", "MIDI" };
 static const char* const clockDivStrings[] = { "Auto", "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar" };
 
 // quarter notes per clock tick, indexed by kParamClockDiv (entry 0 unused: Auto)
@@ -360,13 +371,15 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Crash sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Crash level", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Crash duck", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "Clock source", .min = 0, .max = 2, .def = kClockCV, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = clockSourceStrings },
 };
 
 static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamBars };
 static const uint8_t pageLion[] = { kParamFolder, kParamSample, kParamLionLevel, kParamLionRate, kParamLionPitch, kParamLionFilter };
 static const uint8_t pageGoat[] = { kParamFolderB, kParamSampleB, kParamGoatLevel, kParamGoatRate, kParamGoatPitch, kParamGoatFilter };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
-static const uint8_t pageSeq[] = { kParamSync, kParamClockDiv, kParamStepMode, kParamPattern, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
+static const uint8_t pageSeq[] = { kParamClockSource, kParamSync, kParamClockDiv, kParamStepMode, kParamPattern, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
 static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak, kParamBackbeat };
 static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive, kParamLpg, kParamLpgDecay, kParamLpgRes };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
@@ -1106,6 +1119,15 @@ void	parameterChanged( _NT_algorithm* self, int p )
 	case kParamStepMode:
 		updateGrayedOut( pThis );
 		break;
+	case kParamClockSource:
+		// changing source clears MIDI transport/tempo state, so the sequence
+		// never steps off a stale Start and re-measures cleanly when MIDI is
+		// (re)selected -- it then waits for a fresh host Start
+		pThis->midiRunning = false;
+		pThis->midiStepTicks = 0;
+		pThis->midiTickCount = 0;
+		pThis->midiLastQuarterFrame = pThis->frameClock;
+		break;
 	case kParamFolder:
 	case kParamFolderB:
 	{
@@ -1771,14 +1793,14 @@ void	midiMessage( _NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byt
 }
 
 // MIDI clock (24 PPQN): drives tempo for Sync/ratchet/serpent and, while the
-// transport is running, steps the sequence. The analog Clock input wins if
-// patched (implicit precedence keeps the parameter count down). Realtime bytes
-// are channelless, so the MIDI channel param does not apply here.
+// transport is running, steps the sequence -- but only when Clock source is
+// MIDI, so the loop never plays off a host's clock unless the user asks for it.
+// Realtime bytes are channelless, so the MIDI channel param does not apply here.
 void	midiRealtime( _NT_algorithm* self, uint8_t byte )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
 
-	if ( pThis->v[ kParamClockInput ] )		// analog Clock patched: CV wins
+	if ( pThis->v[ kParamClockSource ] != kClockMidi )		// MIDI clock not selected
 		return;
 
 	switch ( byte )
@@ -2213,13 +2235,17 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		pThis->frameClock++;		// free-running, for MIDI clock tempo
 		if ( clockBus && risingEdge( clockBus[i], pThis->clockArmed ) )
 		{
-			// measure clock period for Sync (sane range 50ms - 4s)
+			// measure clock period for Sync (sane range 50ms - 4s). CV provides
+			// the tempo unless MIDI is the chosen clock source.
 			uint32_t elapsed = pThis->framesSinceClock;
 			pThis->framesSinceClock = 0;
-			if ( elapsed >= NT_globals.sampleRate / 20 && elapsed <= NT_globals.sampleRate * 4 )
+			if ( pv[ kParamClockSource ] != kClockMidi
+				&& elapsed >= NT_globals.sampleRate / 20 && elapsed <= NT_globals.sampleRate * 4 )
 				pThis->clockPeriod = (float)elapsed;
 
-			triggerStep( pThis );
+			// only the CV clock source advances the sequence
+			if ( pv[ kParamClockSource ] == kClockCV )
+				triggerStep( pThis );
 		}
 		if ( ratchetBus )
 		{
