@@ -1119,6 +1119,15 @@ void	parameterChanged( _NT_algorithm* self, int p )
 	case kParamStepMode:
 		updateGrayedOut( pThis );
 		break;
+	case kParamClockSource:
+		// changing source clears MIDI transport/tempo state, so the sequence
+		// never steps off a stale Start and re-measures cleanly when MIDI is
+		// (re)selected -- it then waits for a fresh host Start
+		pThis->midiRunning = false;
+		pThis->midiStepTicks = 0;
+		pThis->midiTickCount = 0;
+		pThis->midiLastQuarterFrame = pThis->frameClock;
+		break;
 	case kParamFolder:
 	case kParamFolderB:
 	{
