@@ -379,19 +379,21 @@
     <tr><td>Select</td><td>Chooses the slice; sampled at the moment Trig fires. <b>Linear</b>: 0–5 V spans all slices. <b>1V/Oct</b>: quantised to semitones, 0 V = C0 (standard Eurorack reference); <code>Select offset</code> sets which note is slice 1, one slice per semitone up. Default offset is C0 — patch a sequencer's pitch CV straight in and it lines up.</td></tr>
     <tr><td>Trig</td><td>Fires the selected slice. With no Select input patched, each trig advances the step sequence instead.</td></tr>
     <tr><td>Random</td><td>Fires a random slice — see <code>Random mode</code>.</td></tr>
-    <tr><td>Clock</td><td>Steps through slices (see <code>Step mode</code>) and teaches Chimera the tempo for sync, ratchets and the serpent. Incoming MIDI clock drives the same things if no analog Clock is patched.</td></tr>
+    <tr><td>Clock</td><td>Advances the step sequence when <code>Clock source</code> is <b>CV</b> (the default), and teaches Chimera the tempo for sync, ratchets and the serpent.</td></tr>
     <tr><td>Reset</td><td>Pulls the sequence back to slice 1.</td></tr>
     <tr><td>Ratchet</td><td>A held gate retrigs the current slice at <code>Ratchet div</code> (1/1 … 1/8 of a clock tick).</td></tr>
   </table></div>
   <h3>Random mode</h3>
   <p><b>Free</b> picks any slice. <b>Beat</b> jumps to the same position inside another beat, so downbeats land on downbeats. <b>Role</b> scans a boom-bap-ish template (kicks on downbeats, snares on backbeats, hats between) and picks a random slice carrying the tag that position expects — falling back to any slice when that role isn't tagged anywhere.</p>
   <h3>MIDI</h3>
-  <p>Notes from 36 upward play slices directly — note 36 is slice 1, chromatically up. <code>MIDI channel</code> selects Omni or channels 1–16. Incoming MIDI clock (24 PPQN, Start/Stop/Continue aware) substitutes for the analog Clock input when nothing's patched there — it drives Sync, the sequence step, ratchets and the serpent's tempo-chase alike; realtime clock bytes are channelless, so <code>MIDI channel</code> doesn't gate them.</p>
+  <p>Notes from 36 upward play slices directly — note 36 is slice 1, chromatically up. <code>MIDI channel</code> selects Omni or channels 1–16. Chimera also reads MIDI clock (24 PPQN, Start/Stop/Continue aware), but only steps the sequence off it when <code>Clock source</code> is set to <b>MIDI</b> — so the loop never runs off a host's clock unless you ask for it. In MIDI mode it drives Sync, the sequence step, ratchets and the serpent's tempo-chase alike; realtime clock bytes are channelless, so <code>MIDI channel</code> doesn't gate them.</p>
 </section>
 
 <section id="sequence">
   <h2>Sequence &amp; sync</h2>
   <canvas class="rule" aria-hidden="true"></canvas>
+  <h3>Clock source</h3>
+  <p>Picks which clock, if any, advances the sequence. <b>Off</b> — nothing steps on a clock; only explicit triggers play (Select + Trig, Random, MIDI notes, Ratchet). <b>CV</b> (default) — the patched Clock input steps. <b>MIDI</b> — incoming MIDI clock steps. Tempo for Sync is still measured either way, so Stretch/Repitch keep tracking a patched clock even when stepping is Off. Because the default is <b>CV</b>, the loop never plays off a host's MIDI clock unless you choose MIDI.</p>
   <h3>Step mode</h3>
   <p><b>Forward</b>, <b>Reverse</b>, <b>PingPong</b>, <b>Walk</b> (drunk ±1), <b>Shuffle</b> (a random permutation, re-dealt each full cycle — every slice exactly once), <b>Pattern</b> (a 16-step groove template — see below).</p>
   <h3>Pattern</h3>
@@ -504,6 +506,7 @@
     <tr><td>Select mode</td><td class="rng">Linear / 1V/Oct</td><td class="rng">Linear</td><td></td></tr>
     <tr><td>Select offset</td><td class="rng">0 … 127</td><td class="rng">12 (C0)</td><td>Root note for 1V/Oct.</td></tr>
     <tr class="grp"><td colspan="4">Sequence</td></tr>
+    <tr><td>Clock source</td><td class="rng">Off / CV / MIDI</td><td class="rng">CV</td><td>Which clock steps the sequence.</td></tr>
     <tr><td>Sync</td><td class="rng">Off / Stretch / Repitch</td><td class="rng">Off</td><td></td></tr>
     <tr><td>Clock div</td><td class="rng">Auto … 1 bar</td><td class="rng">Auto</td><td></td></tr>
     <tr><td>Step mode</td><td class="rng">6 modes</td><td class="rng">Forward</td><td>Forward, Reverse, PingPong, Walk, Shuffle, Pattern.</td></tr>
