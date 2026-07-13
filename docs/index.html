@@ -294,7 +294,7 @@
   <pre class="flow"><b>WAV A</b> <em>LION</em> ─┐                                        ┌── <em>serpent echo</em> ──┐
             ├── slices ── <em>trims</em> ── voice ── <em>fx dice</em> ─┤                  ├── drive ── crush ── <b>OUT</b>
 <b>WAV B</b> <em>GOAT</em> ─┘                                        └──────────────────┘
-                                       + <em>beef</em> one-shot (role-tagged, straight, ducks the original)
+                                       + <em>beef</em> one-shot (role-tagged, straight, ducks the original, gate out per role)
 
             slices: equal / transient · roles: Kick·Snare·Perc·Hat·Crash
             trims: level·rate·pitch·filter · dice: reverse·pitch·stutter·stretch·gate·filter·serpent
@@ -405,6 +405,9 @@
     <li><b>Repitch</b> — varispeed. Speed follows the clock, pitch rises and falls with it.</li>
   </ul>
   <p><code>Clock div</code> declares what a tick means (1/32 … 1 bar). <b>Auto</b> octave-normalises the ratio, so any power-of-two clock just works. The measured tempo shows top-left, as <code>174&gt;172.3</code> — file tempo → clock tempo.</p>
+  <h3>Phrase helpers</h3>
+  <p><code>Phrase reset</code> re-centres the step sequence on a 1, 2, 4 or 8 bar cycle, clearing pending ratchets and ghost notes at the boundary. <code>Fill mode</code> uses that phrase length — or the loaded loop length when Phrase reset is Off — and doubles the dice weight over the last 1/8, 1/4 or 1/2 of the phrase.</p>
+  <p><code>Ghost note</code> is a probability for quiet, straight extra hits between sequenced steps. It looks for tagged Snare, Perc or Hat slices, keeps beat anchors clear, and does nothing when those tags are absent. <code>Ratchet roll</code> is a probability that a sequenced slice holds as an internal ratchet for two or three slice lengths, using <code>Ratchet div</code> for the repeat speed while the sequencer phase keeps moving underneath. Direct CV/MIDI slice addressing still plays exactly what you asked for; the phrase helpers act on the sequenced path.</p>
 </section>
 
 <section id="fx">
@@ -425,8 +428,10 @@
   <p>The macro. Scales every probability at once: <b>50 = as set</b>, 0 = all dice silent, 100 = all doubled. Map it to a big knob.</p>
   <h3>Backbeat</h3>
   <p>A second, rhythm-aware weight on top of Break. At 0 every event rolls normally. As it rises, downbeats (beats 1 &amp; 3 in 4/4) are pulled toward zero probability, so at 100 % the dice only ever fire on backbeats (2 &amp; 4) — downbeats always play straight, everything else keeps rolling. Good for keeping a groove's anchors steady while the chaos lives on the offbeats.</p>
-  <h3>Tame</h3>
-  <p>Hold <kbd>Button 1</kbd> and the beast behaves — every die is suppressed while held. <code>tamed</code> shows on the display. Release to let it loose.</p>
+  <h3>Tame &amp; Wild</h3>
+  <p>Hold <kbd>Button 1</kbd> to override the dice wholesale; <code>Hold mode</code> picks which way. <b>Tame</b> suppresses every die — the beast behaves, <code>tame</code> on the display. <b>Wild</b> maxes the compatible dice — for mutually exclusive pairs like Pitch up/down and Stutter/Stretch, it picks one side so the chaos stays audible. <code>wild</code> shows on the display. Release to return to the rolled probabilities.</p>
+  <h3>Retrigger</h3>
+  <p>Hold <kbd>Button 2</kbd> (outside the editor) to retrigger the current slice on the fly, at the <code>Ratchet div</code> rate — a hands-on ratchet with no cable patched. Sweep <a href="#fx">Break</a> up underneath for an instant fill.</p>
   <h3>Always-on colour</h3>
   <p><code>Crush</code> is an SP-1200-calibrated decimator — 50 is exactly 12 bits at 26.04 kHz. <code>Drive</code> is soft-clip saturation with automatic makeup gain. Both sit on the master bus, after the echo.</p>
   <p><code>LPG</code> is a per-slice low-pass gate (vactrol-style): every slice event strikes it fresh, sweeping the cutoff open then letting it decay — <code>LPG decay</code> sets how long (short pluck to full-slice length, ±10 % drift per strike so runs don't sound identical), <code>LPG res</code> adds resonance. Depth 0 is off; unlike the dice, this isn't a probability — once on, it's on every slice.</p>
@@ -470,7 +475,8 @@
     <tr><td>Level</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>One-shot volume. 0 means off even if a sample is assigned — existing presets stay silent on this feature until you turn it up.</td></tr>
     <tr><td>Duck</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>How hard the <i>original</i> slice ducks while its one-shot plays. The duck follows the one-shot's own envelope, so it attacks and releases in step with the hit rather than on a separate timer.</td></tr>
   </table></div>
-  <p>Whenever a slice fires, its role tag (from whichever loop is the canonical/master one) looks up that role's one-shot. If it's loaded and Level &gt; 0, it plays — straight, from its own voice, completely bypassing the effect dice, Break, Tame, the per-loop static filter and the low-pass gate. It doesn't feed the serpent tail either. One beef hit chokes the previous one, same declick behaviour as the main voice.</p>
+  <p>Whenever a slice fires, its role tag (from whichever loop is the canonical/master one) looks up that role's one-shot. If it's loaded and Level &gt; 0, it plays — straight, from its own voice, completely bypassing the effect dice, Break, Tame/Wild, the per-loop static filter and the low-pass gate. It doesn't feed the serpent tail either. One beef hit chokes the previous one, same declick behaviour as the main voice.</p>
+  <p>Each role also has a <b>gate output</b> — <code>Kick gate</code>, <code>Snare gate</code>, <code>Perc gate</code>, <code>Hat gate</code>, <code>Crash gate</code>, on the <a href="#params">Routing</a> page. It goes high (5 V, added to the bus) for as long as that role's one-shot plays, with a ~5 ms minimum pulse, so you can fire envelopes, external drums or triggers straight off the break's own role hits. The gate follows the one-shot, so it needs the role loaded and Level &gt; 0 to fire.</p>
   <p class="soft">Beef one-shots get their own DRAM budget, sized by the <code>Beef length</code> specification (1–8 s, default 2 s, chosen when you add the algorithm) — five slots' worth, regardless of how many roles you actually use.</p>
 </section>
 
@@ -481,7 +487,7 @@
     <canvas id="screen" width="256" height="64" role="img" aria-label="Mock of the performance display: two waveform strips with slice markers, LION and GOAT centred and outlined, current slice highlighted"></canvas>
     <div class="screen-cap">PERFORMANCE VIEW · two loops, Xfade blend · Lion dimmer than Goat</div>
   </div>
-  <p>One strip per loop — waveform, slice markers, lock flags, the current slice underlined, a moving playhead. <code>LION</code>/<code>GOAT</code> sit centred in each strip with a 1px black halo, so they stay legible over the waveform. In Xfade blend mode each strip's waveform brightness tracks its live crossfade level — the quieter head visibly dims. Top-left shows tempo when synced, as <code>174&gt;172.3</code>. Top-right shows <code>tamed</code> or <code>analysing</code> when relevant — kept clear of the host's own top-right status icon.</p>
+  <p>One strip per loop — waveform, slice markers, lock flags, the current slice underlined, a moving playhead. <code>LION</code>/<code>GOAT</code> sit centred in each strip with a 1px black halo, so they stay legible over the waveform. In Xfade blend mode each strip's waveform brightness tracks its live crossfade level — the quieter head visibly dims. Top-left shows tempo when synced, as <code>174&gt;172.3</code>. Top-right shows <code>tame</code>, <code>wild</code> or <code>analysing</code> when relevant — kept clear of the host's own top-right status icon.</p>
   <p>The <a href="#editor">slice editor</a> is a separate full-screen view: zoomed waveform, slice points, role letters, and a bottom control legend that brightens whichever control you last touched.</p>
 </section>
 
@@ -511,8 +517,12 @@
     <tr><td>Clock div</td><td class="rng">Auto … 1 bar</td><td class="rng">Auto</td><td></td></tr>
     <tr><td>Step mode</td><td class="rng">6 modes</td><td class="rng">Forward</td><td>Forward, Reverse, PingPong, Walk, Shuffle, Pattern.</td></tr>
     <tr><td>Pattern</td><td class="rng">4 templates</td><td class="rng">Boom-bap</td><td>Boom-bap, 4-floor, Two-step, Half-time. Grey unless Step mode = Pattern.</td></tr>
+    <tr><td>Phrase reset</td><td class="rng">Off / 1 / 2 / 4 / 8 bars</td><td class="rng">Off</td><td>Resets sequence phase and clears pending fill/ghost state at the phrase boundary.</td></tr>
+    <tr><td>Fill mode</td><td class="rng">Off / last 1/8 / 1/4 / 1/2</td><td class="rng">Off</td><td>Doubles dice weight inside the chosen end-of-phrase window.</td></tr>
+    <tr><td>Ghost note</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Quiet tagged Snare/Perc/Hat hits between sequenced steps.</td></tr>
     <tr><td>Random mode</td><td class="rng">Free / Beat / Role</td><td class="rng">Free</td><td></td></tr>
-    <tr><td>Ratchet div</td><td class="rng">1/1 … 1/8</td><td class="rng">1/4</td><td></td></tr>
+    <tr><td>Ratchet div</td><td class="rng">1/1 … 1/8</td><td class="rng">1/4</td><td>Also the Button 2 hold-retrigger rate.</td></tr>
+    <tr><td>Ratchet roll</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Chance that a sequenced slice rolls for two or three slice lengths, at Ratchet div.</td></tr>
     <tr><td>MIDI channel</td><td class="rng">Omni / 1–16</td><td class="rng">Omni</td><td></td></tr>
     <tr class="grp"><td colspan="4">FX</td></tr>
     <tr><td>Reverse … Serpent</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Eight per-event probabilities.</td></tr>
@@ -521,6 +531,7 @@
     <tr><td>Quarrel</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Blend random walk.</td></tr>
     <tr><td>Break</td><td class="rng">0 … 100 %</td><td class="rng">50</td><td>Probability macro.</td></tr>
     <tr><td>Backbeat</td><td class="rng">0 … 100 %</td><td class="rng">0</td><td>Suppresses dice on downbeats as it rises.</td></tr>
+    <tr><td>Hold mode</td><td class="rng">Tame / Wild</td><td class="rng">Tame</td><td>What Button 1 does while held: all dice off, or maximum compatible chaos.</td></tr>
     <tr class="grp"><td colspan="4">FX setup</td></tr>
     <tr><td>Pitch amount</td><td class="rng">1 … 24 st</td><td class="rng">12</td><td></td></tr>
     <tr><td>Stutter div</td><td class="rng">1/2 … 1/16 / Random</td><td class="rng">Random</td><td></td></tr>
@@ -538,6 +549,7 @@
     <tr class="grp"><td colspan="4">Routing</td></tr>
     <tr><td>Output L / R</td><td class="rng">bus</td><td class="rng">13 / 14</td><td>Add or replace.</td></tr>
     <tr><td>Level</td><td class="rng">−40 … +6 dB</td><td class="rng">0</td><td>Master, slewed.</td></tr>
+    <tr><td>Kick / Snare / Perc / Hat / Crash gate</td><td class="rng">bus</td><td class="rng">—</td><td>Per-role gate out, high while that role's Beef one-shot plays. Added to the bus.</td></tr>
   </table></div>
   <p class="soft">Two specifications are chosen when you add the algorithm: <code>Max length</code> (1–32 s, default 8 s, per loop) and <code>Beef length</code> (1–8 s, default 2 s, per one-shot slot). Changing either means re-adding the algorithm.</p>
 </section>
@@ -549,7 +561,10 @@
     <li class="soft"><b style="color:var(--ink)">Lock the one.</b> Lock slice 1 (and the snare on beat 3) in the editor — the groove anchors itself no matter how hard the dice roll.</li>
     <li class="soft"><b style="color:var(--ink)">Gate the dice.</b> Map Reverse or Stutter probability to a manual gate at 0/100 for zeptocore-style punch-ins.</li>
     <li class="soft"><b style="color:var(--ink)">Two breaks, one tempo.</b> Trim Goat's Rate to match Lion's feel, then let Blend Chance at ~30 % swap hits between them.</li>
-    <li class="soft"><b style="color:var(--ink)">Ratchet + Break.</b> Hold a ratchet gate while sweeping Break up — instant fill, ends exactly on the next tick.</li>
+    <li class="soft"><b style="color:var(--ink)">Ratchet + Break.</b> Hold a ratchet gate — or just <kbd>Button 2</kbd> — while sweeping Break up: instant fill, ends exactly on the next tick.</li>
+    <li class="soft"><b style="color:var(--ink)">Tame in, Wild out.</b> Set Hold mode to Wild and ride <kbd>Button 1</kbd> for a momentary maximum-chaos burst; flip it to Tame when you need the raw loop back under your thumb.</li>
+    <li class="soft"><b style="color:var(--ink)">Beef gates as a drum brain.</b> Tag a break's kicks and snares, patch the Kick/Snare gate outs to envelopes or external voices, and Chimera sequences your rack off its own hits — no separate trigger sequencer needed.</li>
+    <li class="soft"><b style="color:var(--ink)">Classic jungle guardrails.</b> Set Phrase reset to 4 bars, Fill mode to Last 1/4, Ghost note around 20–35 %, Ratchet roll around 5–15 %, then keep Backbeat high enough that the anchors stay straight while fills, rolls and ghosts do the talking.</li>
     <li class="soft"><b style="color:var(--ink)">Tag first, then Pattern.</b> Role tags do nothing until something reads them — tag a break's kicks/snares/hats before reaching for Random Role or Step mode Pattern, or you'll just get random slices.</li>
     <li class="soft"><b style="color:var(--ink)">Beef without surprises.</b> Level and Sample both default to off, so dropping in a new Beef folder never changes an existing preset's sound until you raise a role's Level yourself.</li>
     <li class="soft"><b style="color:var(--ink)">Backbeat + dice.</b> Push Backbeat toward 100 to keep 1 &amp; 3 dead straight while the dice run wild on 2 &amp; 4 — a groove that stays recognisable no matter how hot the FX get.</li>

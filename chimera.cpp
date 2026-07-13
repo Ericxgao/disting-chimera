@@ -239,6 +239,22 @@ enum
 
 	kParamClockSource,
 
+	// button 1 (held): Tame silences the dice, Wild maxes compatible dice
+	kParamHoldMode,
+
+	// per-role beef gate outputs (high while that role's one-shot plays)
+	kParamBeefGateKick,
+	kParamBeefGateSnare,
+	kParamBeefGatePerc,
+	kParamBeefGateHat,
+	kParamBeefGateCrash,
+
+	// phrase-aware jungle helpers (clocked/step-driven)
+	kParamFillMode,
+	kParamPhraseReset,
+	kParamGhostNote,
+	kParamRatchetRoll,
+
 	kNumParams,
 };
 
@@ -253,10 +269,15 @@ static const char* const barsStrings[] = { "1", "2" };
 static const char* const stutterDivStrings[] = { "1/2", "1/4", "1/8", "1/16", "Random" };
 static const char* const syncModeStrings[] = { "Off", "Stretch", "Repitch" };
 static const char* const clockSourceStrings[] = { "Off", "CV", "MIDI" };
+static const char* const holdModeStrings[] = { "Tame", "Wild" };
+static const char* const fillModeStrings[] = { "Off", "Last 1/8", "Last 1/4", "Last 1/2" };
+static const char* const phraseResetStrings[] = { "Off", "1 bar", "2 bars", "4 bars", "8 bars" };
 static const char* const clockDivStrings[] = { "Auto", "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar" };
 
 // quarter notes per clock tick, indexed by kParamClockDiv (entry 0 unused: Auto)
 static const float clockDivQuarters[] = { 1.0f, 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
+static const int phraseResetBarsValues[] = { 0, 1, 2, 4, 8 };
+static const int fillModeDivs[] = { 0, 8, 4, 2 };
 
 static const char* const selectModeStrings[] = { "Linear", "1V/Oct" };
 static const char* const stepModeStrings[] = { "Forward", "Reverse", "PingPong", "Walk", "Shuffle", "Pattern" };
@@ -373,16 +394,30 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Crash duck", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
 	{ .name = "Clock source", .min = 0, .max = 2, .def = kClockCV, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = clockSourceStrings },
+
+	{ .name = "Hold mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = holdModeStrings },
+
+	NT_PARAMETER_CV_OUTPUT( "Kick gate", 0, 0 )
+	NT_PARAMETER_CV_OUTPUT( "Snare gate", 0, 0 )
+	NT_PARAMETER_CV_OUTPUT( "Perc gate", 0, 0 )
+	NT_PARAMETER_CV_OUTPUT( "Hat gate", 0, 0 )
+	NT_PARAMETER_CV_OUTPUT( "Crash gate", 0, 0 )
+
+	{ .name = "Fill mode", .min = 0, .max = 3, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = fillModeStrings },
+	{ .name = "Phrase reset", .min = 0, .max = 4, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = phraseResetStrings },
+	{ .name = "Ghost note", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Ratchet roll", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
 static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamBars };
 static const uint8_t pageLion[] = { kParamFolder, kParamSample, kParamLionLevel, kParamLionRate, kParamLionPitch, kParamLionFilter };
 static const uint8_t pageGoat[] = { kParamFolderB, kParamSampleB, kParamGoatLevel, kParamGoatRate, kParamGoatPitch, kParamGoatFilter };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
-static const uint8_t pageSeq[] = { kParamClockSource, kParamSync, kParamClockDiv, kParamStepMode, kParamPattern, kParamRandomMode, kParamRatchetDiv, kParamMidiChannel };
-static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak, kParamBackbeat };
+static const uint8_t pageSeq[] = { kParamClockSource, kParamSync, kParamClockDiv, kParamStepMode, kParamPattern, kParamPhraseReset, kParamFillMode, kParamGhostNote, kParamRandomMode, kParamRatchetDiv, kParamRatchetRoll, kParamMidiChannel };
+static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak, kParamBackbeat, kParamHoldMode };
 static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive, kParamLpg, kParamLpgDecay, kParamLpgRes };
-static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel };
+static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel,
+	kParamBeefGateKick, kParamBeefGateSnare, kParamBeefGatePerc, kParamBeefGateHat, kParamBeefGateCrash };
 static const uint8_t pageBeef[] = {
 	kParamBeefFolder,
 	kParamBeefSampleKick, kParamBeefLevelKick, kParamBeefDuckKick,
@@ -421,6 +456,8 @@ static const uint8_t beefLevelParam[ kNumBeefSlots ] = {
 	kParamBeefLevelKick, kParamBeefLevelSnare, kParamBeefLevelPerc, kParamBeefLevelHat, kParamBeefLevelCrash };
 static const uint8_t beefDuckParam[ kNumBeefSlots ] = {
 	kParamBeefDuckKick, kParamBeefDuckSnare, kParamBeefDuckPerc, kParamBeefDuckHat, kParamBeefDuckCrash };
+static const uint8_t beefGateParam[ kNumBeefSlots ] = {
+	kParamBeefGateKick, kParamBeefGateSnare, kParamBeefGatePerc, kParamBeefGateHat, kParamBeefGateCrash };
 
 // ---------------------------------------------------------------------------
 // specifications
@@ -559,6 +596,7 @@ struct _breakSlicer : public _NT_algorithm
 	bool			trigArmed, randArmed, clockArmed, resetArmed;
 	int				seqStep;
 	int				stepPhase;			// rhythmic grid position since Reset (for Backbeat)
+	int				phraseStep;			// step count within the fill/reset phrase
 	int				roleRandomPhase;	// groove-slot scan for Role random mode
 	int				lastSlice;			// most recently triggered slice
 	int				ppDir;				// ping-pong direction
@@ -569,6 +607,7 @@ struct _breakSlicer : public _NT_algorithm
 	// ratchet
 	bool			ratchetHigh;
 	float			ratchetTimer;		// output frames until next retrig
+	float			ratchetRollFrames;	// internal ratchet-roll hold time
 
 	// crush (SP-1200 style decimator)
 	float			crushQ;				// quantisation levels
@@ -593,8 +632,11 @@ struct _breakSlicer : public _NT_algorithm
 	float			echoTime;			// delay in frames, slewed
 	float			echoLpL, echoLpR;	// darkening filter in the feedback path
 
-	// tame (button 1 held: beast behaves)
-	bool			tamed;
+	// button 1 held: 0 none, 1 tame (dice off), 2 wild (max compatible dice), per Hold mode
+	uint8_t			holdState;
+
+	// button 2 held: momentary retrigger of the current slice (ratchet-style)
+	bool			manualRetrig;
 
 	// quarrel (auto random-walk on Blend)
 	float			quarrelWalk;		// wander offset, -50..+50
@@ -632,10 +674,18 @@ struct _breakSlicer : public _NT_algorithm
 	Voice			curB, fadeB;	// second layer, used only in xfade blend mode
 	float			xfA, xfB;		// smoothed crossfade amplitudes
 
+	// ghost notes: quiet straight hits scheduled between sequenced steps
+	Voice			ghost, ghostFade;
+	float			ghostAmp, ghostFadeAmp, ghostNextAmp;
+	float			ghostTimer;
+	int				ghostSlice;
+	bool			ghostPending;
+
 	// beef: a one-shot layered on top of a role-tagged slice, straight (no fx)
 	Voice			beefVoice, beefFadeVoice;
 	float			beefAmp, beefFadeAmp;		// Level% captured at trigger time
 	float			beefDuck;					// Duck% for the current beefVoice's role
+	float			beefGate[ kNumBeefSlots ];	// output frames left on each role's gate
 
 	Rng				rng;
 };
@@ -902,6 +952,7 @@ static void startLoadOneShot( _breakSlicer* pThis, int slot )
 	if ( sampleIdx < 0 )
 	{
 		os.loaded = false;
+		pThis->beefGate[ bi ] = 0.0f;
 		if ( pThis->beefVoice.active && pThis->beefVoice.loopIdx == bi )
 			pThis->beefVoice.active = 0;
 		if ( pThis->beefFadeVoice.active && pThis->beefFadeVoice.loopIdx == bi )
@@ -909,16 +960,17 @@ static void startLoadOneShot( _breakSlicer* pThis, int slot )
 		return;
 	}
 
-	_NT_wavInfo info;
-	NT_getSampleFileInfo( pThis->v[ kParamBeefFolder ], sampleIdx, info );
-	if ( !info.name || !info.numFrames )
-		return;
-
 	os.loaded = false;
+	pThis->beefGate[ bi ] = 0.0f;
 	if ( pThis->beefVoice.active && pThis->beefVoice.loopIdx == bi )
 		pThis->beefVoice.active = 0;
 	if ( pThis->beefFadeVoice.active && pThis->beefFadeVoice.loopIdx == bi )
 		pThis->beefFadeVoice.active = 0;
+
+	_NT_wavInfo info;
+	NT_getSampleFileInfo( pThis->v[ kParamBeefFolder ], sampleIdx, info );
+	if ( !info.name || !info.numFrames )
+		return;
 
 	os.numFrames = ( info.numFrames < pThis->beefCapFrames ) ? info.numFrames : pThis->beefCapFrames;
 	os.srRatio = info.sampleRate / (float)NT_globals.sampleRate;
@@ -960,6 +1012,11 @@ static void startLoad( _breakSlicer* pThis, int slot )
 		pThis->curB.active = 0;
 	if ( pThis->fadeB.active && pThis->fadeB.loopIdx == li )
 		pThis->fadeB.active = 0;
+	if ( pThis->ghost.active && pThis->ghost.loopIdx == li )
+		pThis->ghost.active = 0;
+	if ( pThis->ghostFade.active && pThis->ghostFade.loopIdx == li )
+		pThis->ghostFade.active = 0;
+	pThis->ghostPending = false;
 
 	L.numFrames = ( info.numFrames < pThis->capFrames ) ? info.numFrames : pThis->capFrames;
 	L.numHops = L.numFrames / kAnalysisHop;
@@ -1274,6 +1331,89 @@ struct FxRolls
 	float	filtC0, filtC1;		// SVF coefficient sweep endpoints
 };
 
+static void resetSequencer( _breakSlicer* pThis )
+{
+	pThis->seqStep = 0;
+	pThis->stepPhase = 0;
+	pThis->phraseStep = 0;
+	pThis->roleRandomPhase = 0;
+	pThis->ppDir = 1;
+	pThis->shufflePos = 0;
+	pThis->permN = 0;		// force a fresh shuffle
+	pThis->ratchetHigh = false;
+	pThis->ratchetTimer = 0.0f;
+	pThis->ratchetRollFrames = 0.0f;
+	pThis->ghostPending = false;
+}
+
+static int stepsPerBar( _breakSlicer* pThis, int n )
+{
+	int bars = pThis->v[ kParamBars ] + 1;
+	int spb = n / bars;
+	return ( spb > 0 ) ? spb : 1;
+}
+
+static int phraseLengthSteps( _breakSlicer* pThis, int n, bool resetLength )
+{
+	int bars = phraseResetBarsValues[ pThis->v[ kParamPhraseReset ] ];
+	if ( !bars )
+	{
+		if ( resetLength )
+			return 0;
+		bars = pThis->v[ kParamBars ] + 1;	// Fill follows the loaded loop if no phrase reset is set
+	}
+	return stepsPerBar( pThis, n ) * bars;
+}
+
+static void applyPhraseReset( _breakSlicer* pThis, int n )
+{
+	int len = phraseLengthSteps( pThis, n, true );
+	if ( len > 0 && pThis->phraseStep >= len )
+		resetSequencer( pThis );
+}
+
+static float fillDiceBoost( _breakSlicer* pThis, int n )
+{
+	int mode = pThis->v[ kParamFillMode ];
+	if ( mode <= 0 )
+		return 1.0f;
+	int len = phraseLengthSteps( pThis, n, false );
+	if ( len <= 1 )
+		return 1.0f;
+	int fillSteps = len / fillModeDivs[ mode ];
+	if ( fillSteps < 1 )
+		fillSteps = 1;
+	int pos = pThis->phraseStep % len;
+	return ( pos >= len - fillSteps ) ? 2.0f : 1.0f;
+}
+
+static float stepDurationFrames( _breakSlicer* pThis )
+{
+	return ( pThis->clockPeriod > 0.0f ) ? pThis->clockPeriod : (float)NT_globals.sampleRate / 8.0f;
+}
+
+static void maybeStartRatchetRoll( _breakSlicer* pThis )
+{
+	int amount = pThis->v[ kParamRatchetRoll ];
+	if ( amount <= 0 || pThis->ratchetRollFrames > 0.0f )
+		return;
+	if ( ( pThis->rng.uniform() * 100.0f ) >= amount )
+		return;
+
+	float stepFrames = stepDurationFrames( pThis );
+	int span = 2 + (int)( pThis->rng.next() & 1 );	// two or three slice lengths
+	pThis->ratchetRollFrames = stepFrames * (float)span;
+
+	float interval = stepFrames / ratchetDivValues[ pThis->v[ kParamRatchetDiv ] ];
+	if ( !pThis->ratchetHigh )
+	{
+		pThis->ratchetHigh = true;
+		pThis->ratchetTimer = interval;
+	}
+	else if ( pThis->ratchetTimer <= 0.0f )
+		pThis->ratchetTimer = interval;
+}
+
 // Backbeat weight for the effect dice, applied on top of the Break macro.
 // gridPos is the rhythmic grid position (0-based slice) the event lands on.
 // At Backbeat 0 every event weighs 1.0 (unchanged). As it rises, downbeats
@@ -1309,17 +1449,39 @@ static void rollFx( _breakSlicer* pThis, FxRolls& r, float weight )
 	const int16_t* pv = pThis->v;
 
 	// Break macro scales all probabilities: 50 = as set, 0 = all off, 100 = doubled.
-	// A held Tame button silences all the dice. Backbeat weight biases per event.
-	float scale = pThis->tamed ? 0.0f : ( pv[ kParamBreak ] / 50.0f ) * weight;
-	r.rev     = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamReverse ] * scale;
-	r.up      = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchUp ] * scale;
-	r.down    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchDown ] * scale;
-	r.stut    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStutter ] * scale;
-	r.stretch = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStretch ] * scale;
-	r.gatefx  = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamGate ] * scale;
+	// Backbeat weight biases per event. Button 1 held overrides the dice wholesale:
+	// Tame silences them (scale 0), Wild maxes every compatible die.
+	bool forceAll = false;
+	float scale;
+	if ( pThis->holdState == 1 )			// tame
+		scale = 0.0f;
+	else
+	{
+		scale = ( pv[ kParamBreak ] / 50.0f ) * weight;
+		if ( pThis->holdState == 2 )		// wild
+			forceAll = true;
+	}
+	r.rev     = forceAll || ( pThis->rng.uniform() * 100.0f ) < pv[ kParamReverse ] * scale;
+	r.up      = forceAll || ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchUp ] * scale;
+	r.down    = forceAll || ( pThis->rng.uniform() * 100.0f ) < pv[ kParamPitchDown ] * scale;
+	r.stut    = forceAll || ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStutter ] * scale;
+	r.stretch = forceAll || ( pThis->rng.uniform() * 100.0f ) < pv[ kParamStretch ] * scale;
+	r.gatefx  = forceAll || ( pThis->rng.uniform() * 100.0f ) < pv[ kParamGate ] * scale;
 
-	r.filt    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamFilter ] * scale;
-	r.serp    = ( pThis->rng.uniform() * 100.0f ) < pv[ kParamSerpent ] * scale;
+	r.filt    = forceAll || ( pThis->rng.uniform() * 100.0f ) < pv[ kParamFilter ] * scale;
+	r.serp    = forceAll || ( pThis->rng.uniform() * 100.0f ) < pv[ kParamSerpent ] * scale;
+
+	if ( forceAll )
+	{
+		// Opposing pitch dice and stutter/stretch cannot be heard together, so
+		// Wild picks one of each pair instead of letting them cancel downstream.
+		bool pitchUp = pThis->rng.next() & 1;
+		r.up = pitchUp;
+		r.down = !pitchUp;
+		bool stutter = pThis->rng.next() & 1;
+		r.stut = stutter;
+		r.stretch = !stutter;
+	}
 
 	int dv = pv[ kParamStutterDiv ];
 	if ( dv >= 4 )
@@ -1521,6 +1683,9 @@ static float effectiveBlend( _breakSlicer* pThis )
 	return b;
 }
 
+static Loop* canonicalLoop( _breakSlicer* pThis );
+static int pickSliceForRoleOrNone( _breakSlicer* pThis, Loop* rl, int want, int n );
+
 // idx is the slice to play; gridPos is the rhythmic position used for the
 // Backbeat weighting (the step phase for clock-driven stepping, the slice's
 // own index for CV / MIDI / Random triggers).
@@ -1541,6 +1706,8 @@ static void startBeefVoice( _breakSlicer* pThis, int role )
 	// choke: current beef voice moves to the fade slot
 	if ( pThis->beefVoice.active )
 	{
+		if ( pThis->beefVoice.loopIdx < kNumBeefSlots )
+			pThis->beefGate[ pThis->beefVoice.loopIdx ] = 0.0f;
 		pThis->beefFadeVoice = pThis->beefVoice;
 		pThis->beefFadeVoice.envTarget = 0.0f;
 		pThis->beefFadeAmp = pThis->beefAmp;
@@ -1563,14 +1730,19 @@ static void startBeefVoice( _breakSlicer* pThis, int role )
 
 	pThis->beefAmp = level;
 	pThis->beefDuck = pThis->v[ beefDuckParam[bi] ] / 100.0f;
+
+	// raise this role's gate for the one-shot's duration (min ~5ms so short
+	// samples still make a usable trigger downstream)
+	float minPulse = 0.005f * (float)NT_globals.sampleRate;
+	pThis->beefGate[ bi ] = ( v.framesLeft > minPulse ) ? v.framesLeft : minPulse;
 }
 
-static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos )
+static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos, float diceBoost = 1.0f )
 {
 	const int16_t* pv = pThis->v;
 
 	FxRolls rolls;
-	rollFx( pThis, rolls, backbeatWeight( pThis, gridPos ) );
+	rollFx( pThis, rolls, backbeatWeight( pThis, gridPos ) * diceBoost );
 
 	bool twoLoops = pv[ kParamLoops ] && pThis->loops[1].sliced;
 
@@ -1602,6 +1774,79 @@ static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos )
 	pThis->lastSlice = idx;
 }
 
+static void triggerGhost( _breakSlicer* pThis )
+{
+	Loop* lp = canonicalLoop( pThis );
+	if ( !lp->sliced )
+		return;
+	int idx = pThis->ghostSlice;
+	if ( idx < 0 || idx >= lp->numSlices )
+		return;
+
+	if ( pThis->ghost.active )
+		pThis->ghostFadeAmp = pThis->ghostAmp;
+	FxRolls straight = {};
+	startVoice( pThis, pThis->ghost, pThis->ghostFade, lp, idx, straight );
+	pThis->ghostAmp = pThis->ghostNextAmp;
+}
+
+static int pickGhostSlice( _breakSlicer* pThis, Loop* rl, int n )
+{
+	uint32_t r = pThis->rng.next() % 100;
+	int roles[3];
+	if ( r < 55 )
+	{
+		roles[0] = kRoleSnare; roles[1] = kRolePerc; roles[2] = kRoleHat;
+	}
+	else if ( r < 85 )
+	{
+		roles[0] = kRolePerc; roles[1] = kRoleSnare; roles[2] = kRoleHat;
+	}
+	else
+	{
+		roles[0] = kRoleHat; roles[1] = kRolePerc; roles[2] = kRoleSnare;
+	}
+
+	for ( int i=0; i<3; ++i )
+	{
+		int idx = pickSliceForRoleOrNone( pThis, rl, roles[i], n );
+		if ( idx >= 0 )
+			return idx;
+	}
+	return -1;
+}
+
+static void scheduleGhost( _breakSlicer* pThis, int n, int gridPos )
+{
+	int amount = pThis->v[ kParamGhostNote ];
+	if ( amount <= 0 )
+		return;
+	if ( ( pThis->rng.uniform() * 100.0f ) >= amount )
+		return;
+
+	int spb = stepsPerBar( pThis, n ) / 4;	// sixteenth-ish subdivision within a beat
+	if ( spb < 1 )
+		spb = 1;
+	int nextGrid = ( gridPos + 1 ) % n;
+	if ( ( nextGrid % spb ) == 0 )
+		return;								// keep beat anchors clear
+
+	Loop* rl = canonicalLoop( pThis );
+	int idx = pickGhostSlice( pThis, rl, n );
+	if ( idx < 0 )
+		return;
+
+	float interval = stepDurationFrames( pThis );
+	float delay = interval * 0.5f;
+	if ( delay < (float)kEnvRampFrames )
+		delay = (float)kEnvRampFrames;
+
+	pThis->ghostSlice = idx;
+	pThis->ghostNextAmp = 0.25f + 0.12f * pThis->rng.uniform();
+	pThis->ghostTimer = delay;
+	pThis->ghostPending = true;
+}
+
 // the loop whose slice layout drives sequencing / addressing (loop A is master)
 static Loop* canonicalLoop( _breakSlicer* pThis )
 {
@@ -1618,16 +1863,16 @@ static int expectedRole( int gridPos, int n, int beats, int spb )
 	return ( beat & 1 ) ? kRoleSnare : kRoleKick;
 }
 
-// pick a random slice (0..n-1) carrying role `want` in loop rl; fall back to
-// any slice when that tag pool is empty (sparse-pool policy for Role/Pattern)
-static int pickSliceForRole( _breakSlicer* pThis, Loop* rl, int want, int n )
+// pick a random slice (0..n-1) carrying role `want` in loop rl. The strict
+// helper returns -1 when that tag pool is empty; Role/Pattern use the fallback.
+static int pickSliceForRoleOrNone( _breakSlicer* pThis, Loop* rl, int want, int n )
 {
 	int count = 0;
 	for ( int i=0; i<n; ++i )
 		if ( rl->sliceRole[i] == want )
 			++count;
 	if ( count == 0 )
-		return pThis->rng.next() % n;
+		return -1;
 	int k = pThis->rng.next() % count;
 	for ( int i=0; i<n; ++i )
 		if ( rl->sliceRole[i] == want )
@@ -1636,7 +1881,13 @@ static int pickSliceForRole( _breakSlicer* pThis, Loop* rl, int want, int n )
 				return i;
 			--k;
 		}
-	return pThis->rng.next() % n;				// unreachable, safety
+	return -1;									// unreachable, safety
+}
+
+static int pickSliceForRole( _breakSlicer* pThis, Loop* rl, int want, int n )
+{
+	int idx = pickSliceForRoleOrNone( pThis, rl, want, n );
+	return ( idx >= 0 ) ? idx : (int)( pThis->rng.next() % n );
 }
 
 // pick the slice a Random input trigger should play. gridPos receives the
@@ -1769,9 +2020,20 @@ static void triggerStep( _breakSlicer* pThis )
 	int n = canonicalSlices( pThis );
 	if ( n < 1 )
 		n = 1;
+	applyPhraseReset( pThis, n );
+	if ( pThis->ratchetRollFrames > 0.0f )
+	{
+		(void)nextStep( pThis );		// keep sequence position moving under the roll
+		pThis->stepPhase = ( pThis->stepPhase + 1 ) % n;
+		++pThis->phraseStep;
+		return;
+	}
 	int gridPos = pThis->stepPhase % n;
-	triggerSlice( pThis, nextStep( pThis ), gridPos );
+	triggerSlice( pThis, nextStep( pThis ), gridPos, fillDiceBoost( pThis, n ) );
+	scheduleGhost( pThis, n, gridPos );
+	maybeStartRatchetRoll( pThis );
 	pThis->stepPhase = ( pThis->stepPhase + 1 ) % n;
+	++pThis->phraseStep;
 }
 
 // ---------------------------------------------------------------------------
@@ -1845,12 +2107,7 @@ void	midiRealtime( _NT_algorithm* self, uint8_t byte )
 	}
 		break;
 	case 0xFA:		// start: pull the sequence back to the top (like Reset)
-		pThis->seqStep = 0;
-		pThis->stepPhase = 0;
-		pThis->roleRandomPhase = 0;
-		pThis->ppDir = 1;
-		pThis->shufflePos = 0;
-		pThis->permN = 0;
+		resetSequencer( pThis );
 		pThis->midiStepTicks = 0;
 		pThis->midiTickCount = 0;
 		pThis->midiLastQuarterFrame = pThis->frameClock;	// anchor tempo here
@@ -2106,13 +2363,25 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 			int folders = NT_getNumSampleFolders();
 			pThis->params[ kParamFolder ].max = folders ? folders - 1 : 0;
 			pThis->params[ kParamFolderB ].max = pThis->params[ kParamFolder ].max;
+			pThis->params[ kParamBeefFolder ].max = pThis->params[ kParamFolder ].max;
 			NT_updateParameterDefinition( NT_algorithmIndex( self ), kParamFolder );
 			NT_updateParameterDefinition( NT_algorithmIndex( self ), kParamFolderB );
+			NT_updateParameterDefinition( NT_algorithmIndex( self ), kParamBeefFolder );
 			// presets may have loaded before the card mounted
 			if ( !pThis->loops[0].loaded )
 				requestLoad( pThis, 0 );
 			if ( pv[ kParamLoops ] && !pThis->loops[1].loaded )
 				requestLoad( pThis, 1 );
+			_NT_wavFolderInfo folderInfo;
+			NT_getSampleFolderInfo( pv[ kParamBeefFolder ], folderInfo );
+			int maxIdx = folderInfo.numSampleFiles;	// 0 = None, 1..N = files
+			for ( int bi=0; bi<kNumBeefSlots; ++bi )
+			{
+				pThis->params[ beefSampleParam[bi] ].max = maxIdx;
+				NT_updateParameterDefinition( NT_algorithmIndex( self ), beefSampleParam[bi] );
+				if ( pv[ beefSampleParam[bi] ] && !pThis->beefSample[bi].loaded )
+					requestLoad( pThis, kNumLoops + bi );
+			}
 		}
 	}
 
@@ -2154,6 +2423,14 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	const float* resetBus = pv[ kParamResetInput ] ? busFrames + ( pv[ kParamResetInput ] - 1 ) * numFrames : NULL;
 	const float* ratchetBus = pv[ kParamRatchetInput ] ? busFrames + ( pv[ kParamRatchetInput ] - 1 ) * numFrames : NULL;
 
+	// per-role beef gate outputs (0 = unrouted)
+	float* beefGateBus[ kNumBeefSlots ];
+	for ( int bi=0; bi<kNumBeefSlots; ++bi )
+	{
+		int b = pv[ beefGateParam[bi] ];
+		beefGateBus[bi] = b ? busFrames + ( b - 1 ) * numFrames : NULL;
+	}
+
 	float gain = pThis->gain;
 	float gainTarget = pThis->gainTarget;
 
@@ -2192,14 +2469,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	for ( int i=0; i<numFrames; ++i )
 	{
 		if ( resetBus && risingEdge( resetBus[i], pThis->resetArmed ) )
-		{
-			pThis->seqStep = 0;
-			pThis->stepPhase = 0;
-			pThis->roleRandomPhase = 0;
-			pThis->ppDir = 1;
-			pThis->shufflePos = 0;
-			pThis->permN = 0;		// force a fresh shuffle
-		}
+			resetSequencer( pThis );
 		if ( trigBus && risingEdge( trigBus[i], pThis->trigArmed ) )
 		{
 			if ( selBus )
@@ -2247,31 +2517,46 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 			if ( pv[ kParamClockSource ] == kClockCV )
 				triggerStep( pThis );
 		}
-		if ( ratchetBus )
+		// gate high (Ratchet CV, button 2 held, or an internal roll): retrig the current slice.
+		// Always update ratchetHigh so a button-only release re-arms the next hold.
+		bool high = ( ratchetBus && ratchetBus[i] >= kTrigHi )
+			|| pThis->manualRetrig
+			|| pThis->ratchetRollFrames > 0.0f;
+		if ( high )
 		{
-			// gate high: retrig the current slice at a clock subdivision
-			bool high = ratchetBus[i] >= kTrigHi;
-			if ( high )
+			float interval = stepDurationFrames( pThis ) / ratchetDivValues[ pv[ kParamRatchetDiv ] ];
+			if ( !pThis->ratchetHigh )
 			{
-				float interval = ( pThis->clockPeriod > 0.0f )
-					? pThis->clockPeriod / ratchetDivValues[ pv[ kParamRatchetDiv ] ]
-					: NT_globals.sampleRate / 8.0f;
-				if ( !pThis->ratchetHigh )
+				triggerSlice( pThis, pThis->lastSlice, pThis->lastSlice );
+				pThis->ratchetTimer = interval;
+			}
+			else
+			{
+				pThis->ratchetTimer -= 1.0f;
+				if ( pThis->ratchetTimer <= 0.0f )
 				{
 					triggerSlice( pThis, pThis->lastSlice, pThis->lastSlice );
-					pThis->ratchetTimer = interval;
-				}
-				else
-				{
-					pThis->ratchetTimer -= 1.0f;
-					if ( pThis->ratchetTimer <= 0.0f )
-					{
-						triggerSlice( pThis, pThis->lastSlice, pThis->lastSlice );
-						pThis->ratchetTimer += interval;
-					}
+					pThis->ratchetTimer += interval;
 				}
 			}
-			pThis->ratchetHigh = high;
+		}
+		pThis->ratchetHigh = high;
+
+		if ( pThis->ratchetRollFrames > 0.0f )
+		{
+			pThis->ratchetRollFrames -= 1.0f;
+			if ( pThis->ratchetRollFrames < 0.0f )
+				pThis->ratchetRollFrames = 0.0f;
+		}
+
+		if ( pThis->ghostPending )
+		{
+			pThis->ghostTimer -= 1.0f;
+			if ( pThis->ghostTimer <= 0.0f )
+			{
+				pThis->ghostPending = false;
+				triggerGhost( pThis );
+			}
 		}
 
 		xfA += ( xfTargetA - xfA ) * 0.002f;
@@ -2285,12 +2570,25 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		// original slice ducks, so it attacks/releases in step with the hit
 		float duckMul = 1.0f - pThis->beefDuck * pThis->beefVoice.env;
 
+		// per-role beef gates: high (added, 5V) while the role's one-shot plays
+		for ( int bi=0; bi<kNumBeefSlots; ++bi )
+		{
+			if ( pThis->beefGate[bi] > 0.0f )
+			{
+				pThis->beefGate[bi] -= 1.0f;
+				if ( beefGateBus[bi] )
+					beefGateBus[bi][i] += 5.0f;
+			}
+		}
+
 		float l = 0.0f, r = 0.0f;
 		float sendL = 0.0f, sendR = 0.0f;
 		renderVoice( pThis->cur, ( pThis->cur.loopIdx ? ampB : ampA ) * duckMul, l, r, sendL, sendR );
 		renderVoice( pThis->fade, ( pThis->fade.loopIdx ? ampB : ampA ) * duckMul, l, r, sendL, sendR );
 		renderVoice( pThis->curB, ampB * duckMul, l, r, sendL, sendR );
 		renderVoice( pThis->fadeB, ampB * duckMul, l, r, sendL, sendR );
+		renderVoice( pThis->ghost, ( pThis->ghost.loopIdx ? ampB : ampA ) * pThis->ghostAmp * duckMul, l, r, sendL, sendR );
+		renderVoice( pThis->ghostFade, ( pThis->ghostFade.loopIdx ? ampB : ampA ) * pThis->ghostFadeAmp * duckMul, l, r, sendL, sendR );
 		renderVoice( pThis->beefVoice, pThis->beefAmp, l, r, sendL, sendR );
 		renderVoice( pThis->beefFadeVoice, pThis->beefFadeAmp, l, r, sendL, sendR );
 
@@ -2517,7 +2815,7 @@ enum
 uint32_t	hasCustomUi( _NT_algorithm* self )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
-	uint32_t mask = kNT_button1 | kNT_button3;	// button 1 held = tame
+	uint32_t mask = kNT_button1 | kNT_button2 | kNT_button3;	// b1 held: tame/wild   b2 held: retrig
 	if ( pThis->editMode )
 		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potButtonL | kNT_potButtonC | kNT_potR;
 	return mask;
@@ -2529,8 +2827,8 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 
 	uint16_t pressed = data.controls & ~data.lastButtons;
 
-	// tame: while button 1 is held, the beast behaves (all fx suppressed)
-	pThis->tamed = ( data.controls & kNT_button1 ) != 0;
+	// button 1 held: Tame (dice off) or Wild (max compatible dice), per Hold mode
+	pThis->holdState = ( data.controls & kNT_button1 ) ? ( pThis->v[ kParamHoldMode ] ? 2 : 1 ) : 0;
 
 	if ( pressed & kNT_button3 )
 	{
@@ -2540,6 +2838,9 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 		else
 			pThis->editMode = false;
 	}
+
+	// button 2 held (outside the editor): momentary retrigger of the current slice
+	pThis->manualRetrig = !pThis->editMode && ( data.controls & kNT_button2 );
 
 	if ( !pThis->editMode )
 		return;
@@ -3059,8 +3360,10 @@ bool	draw( _NT_algorithm* self )
 		|| ( twoLoops && pThis->loops[1].loaded && !pThis->loops[1].analysed );
 
 	// y=30: the host draws its own icon in the top-right corner above here
-	if ( pThis->tamed )
-		NT_drawText( 254, 30, "tamed", 15, kNT_textRight, kNT_textTiny );
+	if ( pThis->holdState == 1 )
+		NT_drawText( 254, 30, "tame", 15, kNT_textRight, kNT_textTiny );
+	else if ( pThis->holdState == 2 )
+		NT_drawText( 254, 30, "wild", 15, kNT_textRight, kNT_textTiny );
 	else if ( analysing && pThis->v[ kParamSliceMode ] )
 		NT_drawText( 254, 30, "analysing", 8, kNT_textRight, kNT_textTiny );
 
