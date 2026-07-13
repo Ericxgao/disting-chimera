@@ -596,7 +596,7 @@ struct _breakSlicer : public _NT_algorithm
 	bool			trigArmed, randArmed, clockArmed, resetArmed;
 	int				seqStep;
 	int				stepPhase;			// rhythmic grid position since Reset (for Backbeat)
-	int				phraseStep;			// step count within the fill/reset phrase
+	uint32_t		phraseStep;			// step count within the fill/reset phrase
 	int				roleRandomPhase;	// groove-slot scan for Role random mode
 	int				lastSlice;			// most recently triggered slice
 	int				ppDir;				// ping-pong direction
@@ -632,6 +632,8 @@ struct _breakSlicer : public _NT_algorithm
 	float			echoTime;			// delay in frames, slewed
 	float			echoLpL, echoLpR;	// darkening filter in the feedback path
 
+	// Set from customUi (UI thread), read in step()/rollFx (audio thread); each is a
+	// single byte/bool, so the cross-thread handoff is intentionally lock-free.
 	// button 1 held: 0 none, 1 tame (dice off), 2 wild (max compatible dice), per Hold mode
 	uint8_t			holdState;
 
@@ -729,7 +731,7 @@ static void computeSlices( _breakSlicer* pThis, Loop& L )
 			uint32_t lo = ( gridHop > range ) ? gridHop - range : 0;
 			uint32_t hi = gridHop + range;
 			if ( hi >= L.numHops )
-				hi = L.numHops - 1;
+				hi = L.numHops ? L.numHops - 1 : 0;
 			uint32_t best = gridHop;
 			float bestV = -1.0f;
 			for ( uint32_t k=lo; k<=hi; ++k )
@@ -1154,6 +1156,19 @@ static void updateLpg( _breakSlicer* pThis )
 	pThis->lpgDecayFrac = pThis->v[ kParamLpgDecay ] / 100.0f;
 }
 
+// refresh the per-role beef Sample param maxima from the shared Beef folder
+static void refreshBeefSampleMax( _breakSlicer* pThis, int algIdx )
+{
+	_NT_wavFolderInfo folderInfo;
+	NT_getSampleFolderInfo( pThis->v[ kParamBeefFolder ], folderInfo );
+	int maxIdx = folderInfo.numSampleFiles;	// 0 = None, 1..N = files
+	for ( int bi=0; bi<kNumBeefSlots; ++bi )
+	{
+		pThis->params[ beefSampleParam[bi] ].max = maxIdx;
+		NT_updateParameterDefinition( algIdx, beefSampleParam[bi] );
+	}
+}
+
 void	parameterChanged( _NT_algorithm* self, int p )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
@@ -1208,17 +1223,9 @@ void	parameterChanged( _NT_algorithm* self, int p )
 			requestLoad( pThis, 1 );
 		break;
 	case kParamBeefFolder:
-	{
-		_NT_wavFolderInfo folderInfo;
-		NT_getSampleFolderInfo( pThis->v[ kParamBeefFolder ], folderInfo );
-		int maxIdx = folderInfo.numSampleFiles;	// 0 = None, 1..N = files
+		refreshBeefSampleMax( pThis, NT_algorithmIndex( self ) );
 		for ( int bi=0; bi<kNumBeefSlots; ++bi )
-		{
-			pThis->params[ beefSampleParam[bi] ].max = maxIdx;
-			NT_updateParameterDefinition( NT_algorithmIndex( self ), beefSampleParam[bi] );
 			requestLoad( pThis, kNumLoops + bi );
-		}
-	}
 		break;
 	case kParamBeefSampleKick:
 	case kParamBeefSampleSnare:
@@ -1368,7 +1375,7 @@ static int phraseLengthSteps( _breakSlicer* pThis, int n, bool resetLength )
 static void applyPhraseReset( _breakSlicer* pThis, int n )
 {
 	int len = phraseLengthSteps( pThis, n, true );
-	if ( len > 0 && pThis->phraseStep >= len )
+	if ( len > 0 && pThis->phraseStep >= (uint32_t)len )
 		resetSequencer( pThis );
 }
 
@@ -1771,7 +1778,14 @@ static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos, float diceB
 	if ( idx >= 0 && idx < roleLp->numSlices )
 		startBeefVoice( pThis, roleLp->sliceRole[ idx ] );
 
-	pThis->lastSlice = idx;
+	int lastN = canonicalSlices( pThis );
+	int lastIdx = idx;
+	if ( lastN > 0 )
+	{
+		if ( lastIdx < 0 ) lastIdx = 0;
+		else if ( lastIdx >= lastN ) lastIdx = lastN - 1;
+	}
+	pThis->lastSlice = lastIdx;
 }
 
 static void triggerGhost( _breakSlicer* pThis )
@@ -1997,11 +2011,8 @@ static int nextStep( _breakSlicer* pThis )
 	{			// then a random slice of that role plays (fallback: any slice)
 		int pos = pThis->seqStep % n;
 		pThis->seqStep = ( pos + 1 ) % n;
-		int bars = pThis->v[ kParamBars ] + 1;
-		int stepsPerBar = n / bars;
-		if ( stepsPerBar < 1 )
-			stepsPerBar = 1;
-		int patIdx = ( ( pos % stepsPerBar ) * 16 ) / stepsPerBar;	// -> 16-step grid
+		int spb = stepsPerBar( pThis, n );
+		int patIdx = ( ( pos % spb ) * 16 ) / spb;	// -> 16-step grid
 		if ( patIdx > 15 )
 			patIdx = 15;
 		int want = patternTable[ pThis->v[ kParamPattern ] ][ patIdx ];
@@ -2372,16 +2383,10 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 				requestLoad( pThis, 0 );
 			if ( pv[ kParamLoops ] && !pThis->loops[1].loaded )
 				requestLoad( pThis, 1 );
-			_NT_wavFolderInfo folderInfo;
-			NT_getSampleFolderInfo( pv[ kParamBeefFolder ], folderInfo );
-			int maxIdx = folderInfo.numSampleFiles;	// 0 = None, 1..N = files
+			refreshBeefSampleMax( pThis, NT_algorithmIndex( self ) );
 			for ( int bi=0; bi<kNumBeefSlots; ++bi )
-			{
-				pThis->params[ beefSampleParam[bi] ].max = maxIdx;
-				NT_updateParameterDefinition( NT_algorithmIndex( self ), beefSampleParam[bi] );
 				if ( pv[ beefSampleParam[bi] ] && !pThis->beefSample[bi].loaded )
 					requestLoad( pThis, kNumLoops + bi );
-			}
 		}
 	}
 
