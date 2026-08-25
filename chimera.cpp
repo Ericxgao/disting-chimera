@@ -700,6 +700,9 @@ struct _breakSlicer : public _NT_algorithm
 	float			beefGate[ kNumBeefSlots ];	// output frames left on each role's gate
 
 	Rng				rng;
+	// the UI thread must not touch `rng`: step() drives the FX dice from it,
+	// and an interleaved read/write there would disturb their sequence
+	Rng				uiRng;
 };
 
 // the slice count used for sequencing / CV / MIDI addressing (loop A is master)
@@ -907,6 +910,7 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 	alg->trigArmed = alg->randArmed = alg->clockArmed = alg->resetArmed = true;
 	alg->ppDir = 1;
 	alg->rng.seed( 0xBEA7BEA7u );
+	alg->uiRng.seed( 0x5EED10AFu );
 
 	return alg;
 }
@@ -2867,20 +2871,50 @@ static void browseSampleParam( _breakSlicer* pThis, int li, int delta )
 	pThis->browseSample[li] = ( v == pThis->v[ p ] ) ? -1 : (int16_t)v;
 }
 
-// commit the browse position: writing through the UI path lets the host track
-// the change, and parameterChanged() fires the load
-static void commitSampleParam( _breakSlicer* pThis, int li )
+// load a sample index for a head. Writing through the UI path lets the host
+// track the change, and parameterChanged() fires the load
+static void loadSampleParam( _breakSlicer* pThis, int li, int v )
 {
-	if ( pThis->browseSample[li] < 0 )
-		return;
-
 	int algIdx = NT_algorithmIndex( pThis );
 	if ( algIdx < 0 )
 		return;
 
-	NT_setParameterFromUi( algIdx, loopSampleParam[li] + NT_parameterOffset(),
-		(int16_t)pThis->browseSample[li] );
+	NT_setParameterFromUi( algIdx, loopSampleParam[li] + NT_parameterOffset(), (int16_t)v );
 	pThis->browseSample[li] = -1;
+}
+
+// a different random sample from the same folder. Never the one already
+// loaded: the dedupe in startLoad would make that a silent no-op, which reads
+// as a dead button.
+static void randomSampleParam( _breakSlicer* pThis, int li )
+{
+	int p = loopSampleParam[ li ];
+	int lo = pThis->params[ p ].min;
+	int hi = pThis->params[ p ].max;
+	int span = hi - lo;			// how many files there are besides the current one
+	if ( span < 1 )
+		return;					// nothing else in the folder to land on
+
+	// stir in the frame count so the roll differs from power-on to power-on --
+	// both Rngs are otherwise seeded to a fixed constant by design
+	pThis->uiRng.seed( pThis->uiRng.next() ^ pThis->frameClock );
+
+	// uniform over the span values that are not the current one
+	int v = lo + (int)( pThis->uiRng.next() % (uint32_t)span );
+	if ( v >= pThis->v[ p ] )
+		++v;
+
+	loadSampleParam( pThis, li, v );
+}
+
+// the encoder push: commit a pending browse, or -- when nothing is pending --
+// roll a random sample from the folder. Pushing repeatedly re-rolls.
+static void pushSampleEncoder( _breakSlicer* pThis, int li )
+{
+	if ( pThis->browseSample[li] >= 0 )
+		loadSampleParam( pThis, li, pThis->browseSample[li] );
+	else
+		randomSampleParam( pThis, li );
 }
 
 // editor controls tracked for the legend's "last used" highlight
@@ -2935,17 +2969,18 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 	{
 		// performance view: encoder L browses Lion's samples, encoder R
 		// browses Goat's (idle when only one head is on). Turning only moves
-		// the name on screen; the push is what loads it.
+		// the name on screen; the push loads it, or rolls a random sample
+		// when there is nothing pending.
 		if ( data.encoders[0] )
 			browseSampleParam( pThis, 0, data.encoders[0] );
 		if ( pressed & kNT_encoderButtonL )
-			commitSampleParam( pThis, 0 );
+			pushSampleEncoder( pThis, 0 );
 		if ( pThis->v[ kParamLoops ] )
 		{
 			if ( data.encoders[1] )
 				browseSampleParam( pThis, 1, data.encoders[1] );
 			if ( pressed & kNT_encoderButtonR )
-				commitSampleParam( pThis, 1 );
+				pushSampleEncoder( pThis, 1 );
 		}
 		return;
 	}
