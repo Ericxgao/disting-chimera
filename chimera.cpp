@@ -475,6 +475,10 @@ static const uint8_t beefGateParam[ kNumBeefSlots ] = {
 static const _NT_specification specifications[] = {
 	{ .name = "Max length", .min = 1, .max = 32, .def = 8, .type = kNT_typeSeconds },
 	{ .name = "Beef length", .min = 1, .max = 8, .def = 2, .type = kNT_typeSeconds },
+	// Reserves one spare loop buffer so a new sample reads in behind the one
+	// playing. One buffer covers both heads, since only one read runs at a
+	// time -- it costs a third of the loop memory, not double it.
+	{ .name = "Seamless load", .min = 0, .max = 1, .def = 1, .type = kNT_typeGeneric },
 };
 
 // ---------------------------------------------------------------------------
@@ -601,6 +605,19 @@ struct _breakSlicer : public _NT_algorithm
 	// sample loading (one read at a time). slots 0..kNumLoops-1 are the
 	// loops, kNumLoops..kNumLoops+kNumBeefSlots-1 are the beef one-shots
 	_NT_wavRequest	request;
+
+	// seamless load: the read lands in `spare` while the old sample keeps
+	// playing, and the buffers swap on the callback. NULL when the
+	// specification is off, which restores the old cut-then-read behaviour.
+	// One spare covers both heads because only one read is ever in flight.
+	float*			spare;
+	bool			loadingToSpare;		// this read is going to `spare`
+	uint32_t		pendingFrames;		// metadata held back until the swap,
+	uint32_t		pendingHops;		// so the playing sample stays consistent
+	float			pendingSrRatio;
+	float			pendingBpm;
+	int32_t			pendingFolder;
+	int32_t			pendingSample;
 	bool			cardMounted;
 	bool			awaitingCallback;
 	int				loadingSlot;
@@ -965,9 +982,21 @@ void	calculateRequirements( _NT_algorithmRequirements& req, const int32_t* speci
 	req.sram = sizeof(_breakSlicer);
 	req.dram = kNumLoops * ( capFrames * 2 * sizeof(float) + 2 * numHops * sizeof(float) )
 		+ kEchoFrames * 2 * sizeof(float)
-		+ kNumBeefSlots * beefCapFrames * 2 * sizeof(float);
+		+ kNumBeefSlots * beefCapFrames * 2 * sizeof(float)
+		+ ( specifications[2] ? capFrames * 2 * sizeof(float) : 0 );	// seamless load spare
 	req.dtc = 0;
 	req.itc = 0;
+}
+
+// hand a voice still reading the outgoing buffer to its fade slot, so it rings
+// out where it is rather than jumping mid-slice into a different sample
+static void retireVoice( Voice& v, Voice& fadeSlot, int li )
+{
+	if ( !v.active || v.loopIdx != li )
+		return;
+	fadeSlot = v;
+	fadeSlot.envTarget = 0.0f;
+	v.active = 0;
 }
 
 static void wavCallback( void* callbackData, bool success )
@@ -975,15 +1004,45 @@ static void wavCallback( void* callbackData, bool success )
 	_breakSlicer* pThis = (_breakSlicer*)callbackData;
 	pThis->awaitingCallback = false;
 	int slot = pThis->loadingSlot;
+	bool toSpare = pThis->loadingToSpare;
+	pThis->loadingToSpare = false;
+
 	if ( success && slot >= kNumLoops )
 	{
 		OneShot& os = pThis->beefSample[ slot - kNumLoops ];
 		os.loaded = true;
 		return;
 	}
+	if ( !success && toSpare )
+		return;		// the playing sample never moved, so there is nothing to undo
 	if ( success )
 	{
 		Loop& L = pThis->loops[ slot ];
+
+		if ( toSpare )
+		{
+			// the new sample is sitting in `spare`: hand that buffer to the
+			// loop and keep the old one as the next spare. Voices still
+			// reading it fade out of it, and step() holds the next read back
+			// until they are done, so nothing is overwritten under them.
+			float* outgoing = L.sample;
+			L.sample = pThis->spare;
+			pThis->spare = outgoing;
+
+			retireVoice( pThis->cur, pThis->fade, slot );
+			retireVoice( pThis->curB, pThis->fadeB, slot );
+			retireVoice( pThis->ghost, pThis->ghostFade, slot );
+			pThis->ghostPending = false;
+
+			L.numFrames = pThis->pendingFrames;
+			L.numHops = pThis->pendingHops;
+			L.srRatio = pThis->pendingSrRatio;
+			L.fileBpm = pThis->pendingBpm;
+			L.loadedFolder = pThis->pendingFolder;
+			L.loadedSample = pThis->pendingSample;
+			L.sliced = false;
+		}
+
 		L.loaded = true;
 		L.analysisPos = 0;
 		L.prevHopEnergy = 0.0f;
@@ -1019,6 +1078,12 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 		L.srRatio = 1.0f;
 		L.loadedFolder = L.loadedSample = -1;
 	}
+	if ( specifications[2] )
+	{
+		alg->spare = dram;
+		dram += capFrames * 2;
+	}
+
 	uint32_t beefCapFrames = (uint32_t)specifications[1] * 48000;
 	alg->beefCapFrames = beefCapFrames;
 	for ( int bi=0; bi<kNumBeefSlots; ++bi )
@@ -1186,39 +1251,82 @@ static void startLoad( _breakSlicer* pThis, int slot )
 		&& L.loadedSample == (int32_t)pThis->v[ loopSampleParam[li] ] )
 		return;
 
-	L.loaded = false;
-	L.sliced = false;
-	L.analysed = false;
-	if ( pThis->cur.active && pThis->cur.loopIdx == li )
-		pThis->cur.active = 0;
-	if ( pThis->fade.active && pThis->fade.loopIdx == li )
-		pThis->fade.active = 0;
-	if ( pThis->curB.active && pThis->curB.loopIdx == li )
-		pThis->curB.active = 0;
-	if ( pThis->fadeB.active && pThis->fadeB.loopIdx == li )
-		pThis->fadeB.active = 0;
-	if ( pThis->ghost.active && pThis->ghost.loopIdx == li )
-		pThis->ghost.active = 0;
-	if ( pThis->ghostFade.active && pThis->ghostFade.loopIdx == li )
-		pThis->ghostFade.active = 0;
-	pThis->ghostPending = false;
+	uint32_t frames = ( info.numFrames < pThis->capFrames ) ? info.numFrames : pThis->capFrames;
 
-	L.numFrames = ( info.numFrames < pThis->capFrames ) ? info.numFrames : pThis->capFrames;
-	L.numHops = L.numFrames / kAnalysisHop;
-	L.srRatio = info.sampleRate / (float)NT_globals.sampleRate;
-	L.fileBpm = parseBpmFromName( info.name );
+	// Seamless: read into the spare and leave everything about the playing
+	// sample alone until the callback swaps them. Only worth it when there is
+	// something to preserve -- the first load of a head has nothing to cut.
+	bool seamless = ( pThis->spare != NULL ) && L.loaded;
+	pThis->loadingToSpare = seamless;
+
+	if ( seamless )
+	{
+		pThis->pendingFrames = frames;
+		pThis->pendingHops = frames / kAnalysisHop;
+		pThis->pendingSrRatio = info.sampleRate / (float)NT_globals.sampleRate;
+		pThis->pendingBpm = parseBpmFromName( info.name );
+	}
+	else
+	{
+		L.loaded = false;
+		L.sliced = false;
+		L.analysed = false;
+		if ( pThis->cur.active && pThis->cur.loopIdx == li )
+			pThis->cur.active = 0;
+		if ( pThis->fade.active && pThis->fade.loopIdx == li )
+			pThis->fade.active = 0;
+		if ( pThis->curB.active && pThis->curB.loopIdx == li )
+			pThis->curB.active = 0;
+		if ( pThis->fadeB.active && pThis->fadeB.loopIdx == li )
+			pThis->fadeB.active = 0;
+		if ( pThis->ghost.active && pThis->ghost.loopIdx == li )
+			pThis->ghost.active = 0;
+		if ( pThis->ghostFade.active && pThis->ghostFade.loopIdx == li )
+			pThis->ghostFade.active = 0;
+		pThis->ghostPending = false;
+
+		L.numFrames = frames;
+		L.numHops = frames / kAnalysisHop;
+		L.srRatio = info.sampleRate / (float)NT_globals.sampleRate;
+		L.fileBpm = parseBpmFromName( info.name );
+	}
 
 	pThis->request.folder = pThis->v[ loopFolderParam[li] ];
 	pThis->request.sample = pThis->v[ loopSampleParam[li] ];
-	pThis->request.numFrames = L.numFrames;
-	pThis->request.dst = L.sample;
+	pThis->request.numFrames = frames;
+	pThis->request.dst = seamless ? pThis->spare : L.sample;
 
-	L.loadedFolder = pThis->v[ loopFolderParam[li] ];
-	L.loadedSample = pThis->v[ loopSampleParam[li] ];
+	if ( seamless )
+	{
+		// stamped on the swap instead, so a failed read leaves the stamp
+		// describing what is actually still in the buffer
+		pThis->pendingFolder = pThis->v[ loopFolderParam[li] ];
+		pThis->pendingSample = pThis->v[ loopSampleParam[li] ];
+	}
+	else
+	{
+		L.loadedFolder = pThis->v[ loopFolderParam[li] ];
+		L.loadedSample = pThis->v[ loopSampleParam[li] ];
+	}
 
 	pThis->loadingSlot = li;
 	if ( NT_readSampleFrames( pThis->request ) )
 		pThis->awaitingCallback = true;
+}
+
+// is any voice still reading the spare? Only true for the short window after a
+// seamless swap, while the outgoing sample fades. Fades always reach zero, so
+// this cannot stall a queued read indefinitely.
+static bool spareInUse( _breakSlicer* pThis )
+{
+	if ( !pThis->spare )
+		return false;
+	const Voice* vs[] = { &pThis->cur, &pThis->fade, &pThis->curB,
+		&pThis->fadeB, &pThis->ghost, &pThis->ghostFade };
+	for ( unsigned i=0; i<ARRAY_SIZE(vs); ++i )
+		if ( vs[i]->active && vs[i]->buf == pThis->spare )
+			return true;
+	return false;
 }
 
 static void requestLoad( _breakSlicer* pThis, int slot )
@@ -2609,8 +2717,9 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		}
 	}
 
-	// kick queued loads
-	if ( !pThis->awaitingCallback )
+	// kick queued loads. Held back while a voice is still ringing out of the
+	// spare after a seamless swap -- that buffer is the next read's target.
+	if ( !pThis->awaitingCallback && !spareInUse( pThis ) )
 	{
 		for ( int slot=0; slot<kNumLoadSlots; ++slot )
 		{
