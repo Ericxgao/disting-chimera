@@ -62,6 +62,16 @@ nt_tool = $(if $(wildcard $(NT_TOOL)),$(NT_TOOL),$(error nt_plugin.py not found:
 deploy: all
 	python "$(nt_tool)" deploy $(outputs)
 
+# push without the rescan. The "loaded" flag the module reports is code
+# residency, not preset membership: once it has loaded a plug-in's .o it stays
+# resident, and taking the algorithm out of the preset does not release it. So
+# once anything has been used since boot, the rescan is refused however clean
+# the preset looks, and deploy fails on a push that in fact succeeded.
+# Use this, then power-cycle the module to pick the new build up.
+push: all
+	python "$(nt_tool)" push $(outputs)
+	@echo "pushed -- power-cycle the module to load it (or 'make rescan' if nothing is resident)"
+
 # reset and rescan the plug-in list, without pushing again
 rescan:
 	python "$(nt_tool)" rescan
@@ -74,4 +84,4 @@ scan:
 ports:
 	python "$(nt_tool)" ports
 
-.PHONY: all clean check deploy rescan scan ports
+.PHONY: all clean check deploy push rescan scan ports
