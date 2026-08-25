@@ -1,4 +1,8 @@
 
+# Recipes are POSIX sh (mkdir -p, rm -f, test). Without this, running make
+# from cmd.exe picks cmd as the shell and every recipe breaks.
+SHELL := /bin/sh
+
 ifndef NT_API_PATH
 	NT_API_PATH := ../distingNT_API
 endif
