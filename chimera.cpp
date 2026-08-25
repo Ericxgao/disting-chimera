@@ -661,6 +661,12 @@ struct _breakSlicer : public _NT_algorithm
 	float			zoomPot;			// 0..1 -> 1x..256x
 	uint8_t			lastControl;		// most recently used editor control, for the legend highlight
 
+	// performance-view sample browse: the encoder scrolls this, the encoder
+	// push commits it to the Sample parameter. -1 means nothing pending, i.e.
+	// the display is showing the loaded sample. Browsing must not load on
+	// every detent -- a read is seconds long, and each one restarts playback.
+	int16_t			browseSample[ kNumLoops ];
+
 	// cached parameter values
 	float			gain, gainTarget;
 	float			pitchUpFactor, pitchDownFactor;
@@ -890,6 +896,7 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 		alg->loopGain[li] = alg->loopGainTarget[li] = 1.0f;
 		alg->loopSpeed[li] = 1.0f;
 		alg->loopTune[li] = 1.0f;
+		alg->browseSample[li] = -1;		// zeroed memset would read as "browsing file 0"
 	}
 	alg->trigArmed = alg->randArmed = alg->clockArmed = alg->resetArmed = true;
 	alg->ppDir = 1;
@@ -1211,14 +1218,19 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		// folder change alone never fires the sample param, so kick the
 		// load of the (now re-clamped) current index here
 		int li = ( p == kParamFolder ) ? 0 : 1;
+		pThis->browseSample[li] = -1;	// indices mean a different folder now
 		if ( li == 0 || pThis->v[ kParamLoops ] )
 			requestLoad( pThis, li );
 	}
 		break;
 	case kParamSample:
+		// also covers a change made from the menu rather than the encoder,
+		// which retires whatever was pending
+		pThis->browseSample[0] = -1;
 		requestLoad( pThis, 0 );
 		break;
 	case kParamSampleB:
+		pThis->browseSample[1] = -1;
 		if ( pThis->v[ kParamLoops ] )
 			requestLoad( pThis, 1 );
 		break;
@@ -2802,29 +2814,46 @@ static void snapZero( _breakSlicer* pThis, Loop& L )
 	L.manualSlices = true;
 }
 
-// step one head's Sample parameter, clamped to the file count of its folder.
-// Written through the UI path so the host tracks the change and
-// parameterChanged() fires the load (requestLoad queues if one is in flight,
-// so spinning the encoder never stacks up reads).
-static void stepSampleParam( _breakSlicer* pThis, int li, int delta )
+// the sample index the performance view is showing for a head: the pending
+// browse position if there is one, otherwise the loaded sample
+static int shownSample( _breakSlicer* pThis, int li )
 {
-	int algIdx = NT_algorithmIndex( pThis );
-	if ( algIdx < 0 )
-		return;
+	return ( pThis->browseSample[li] >= 0 )
+		? pThis->browseSample[li] : pThis->v[ loopSampleParam[li] ];
+}
 
+// scroll one head's browse position, clamped to the file count of its folder.
+// Nothing is loaded here -- see browseSample.
+static void browseSampleParam( _breakSlicer* pThis, int li, int delta )
+{
 	int p = loopSampleParam[ li ];
 	int lo = pThis->params[ p ].min;
 	int hi = pThis->params[ p ].max;	// tracks the folder's file count
 	if ( hi <= lo )
 		return;
 
-	int v = pThis->v[ p ] + delta;
+	int v = shownSample( pThis, li ) + delta;
 	if ( v < lo ) v = lo;
 	if ( v > hi ) v = hi;
-	if ( v == pThis->v[ p ] )
+
+	// back on the loaded one is not pending, so the marker clears
+	pThis->browseSample[li] = ( v == pThis->v[ p ] ) ? -1 : (int16_t)v;
+}
+
+// commit the browse position: writing through the UI path lets the host track
+// the change, and parameterChanged() fires the load
+static void commitSampleParam( _breakSlicer* pThis, int li )
+{
+	if ( pThis->browseSample[li] < 0 )
 		return;
 
-	NT_setParameterFromUi( algIdx, p + NT_parameterOffset(), (int16_t)v );
+	int algIdx = NT_algorithmIndex( pThis );
+	if ( algIdx < 0 )
+		return;
+
+	NT_setParameterFromUi( algIdx, loopSampleParam[li] + NT_parameterOffset(),
+		(int16_t)pThis->browseSample[li] );
+	pThis->browseSample[li] = -1;
 }
 
 // editor controls tracked for the legend's "last used" highlight
@@ -2845,8 +2874,10 @@ enum
 uint32_t	hasCustomUi( _NT_algorithm* self )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
-	// b1 held: tame/wild   b2 held: retrig   encoders: pick each head's sample
-	uint32_t mask = kNT_button1 | kNT_button2 | kNT_button3 | kNT_encoderL | kNT_encoderR;
+	// b1 held: tame/wild   b2 held: retrig
+	// encoders: browse each head's sample, push to load it
+	uint32_t mask = kNT_button1 | kNT_button2 | kNT_button3
+		| kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR;
 	if ( pThis->editMode )
 		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potButtonL | kNT_potButtonC | kNT_potR;
 	return mask;
@@ -2875,12 +2906,20 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 
 	if ( !pThis->editMode )
 	{
-		// performance view: the encoders always step the loaded sample --
-		// encoder L is Lion, encoder R is Goat (idle when only one head is on)
+		// performance view: encoder L browses Lion's samples, encoder R
+		// browses Goat's (idle when only one head is on). Turning only moves
+		// the name on screen; the push is what loads it.
 		if ( data.encoders[0] )
-			stepSampleParam( pThis, 0, data.encoders[0] );
-		if ( data.encoders[1] && pThis->v[ kParamLoops ] )
-			stepSampleParam( pThis, 1, data.encoders[1] );
+			browseSampleParam( pThis, 0, data.encoders[0] );
+		if ( pressed & kNT_encoderButtonL )
+			commitSampleParam( pThis, 0 );
+		if ( pThis->v[ kParamLoops ] )
+		{
+			if ( data.encoders[1] )
+				browseSampleParam( pThis, 1, data.encoders[1] );
+			if ( pressed & kNT_encoderButtonR )
+				commitSampleParam( pThis, 1 );
+		}
 		return;
 	}
 
@@ -3369,14 +3408,29 @@ static void drawOutlinedText( int x, int y, const char* str, int colour, _NT_tex
 	NT_drawText( x, y, str, colour, align, kNT_textTiny );
 }
 
-// the head's current WAV file name, drawn in the performance view so an
-// encoder-driven sample change is visible without opening the Lion/Goat page
+// the head's WAV file name, drawn in the performance view so the encoder can
+// browse samples without opening the Lion/Goat page. A pending browse position
+// is marked with '>' and drawn bright, to read as "push to load this"; the
+// loaded name sits dim.
 static void drawSampleName( _breakSlicer* pThis, int li, int y )
 {
 	_NT_wavInfo info;
-	NT_getSampleFileInfo( pThis->v[ loopFolderParam[li] ], pThis->v[ loopSampleParam[li] ], info );
-	if ( info.name )
+	NT_getSampleFileInfo( pThis->v[ loopFolderParam[li] ], shownSample( pThis, li ), info );
+	if ( !info.name )
+		return;
+
+	if ( pThis->browseSample[li] < 0 )
+	{
 		drawOutlinedText( 2, y, info.name, 10, kNT_textLeft );
+		return;
+	}
+
+	char buf[ 48 ];
+	buf[0] = '>';
+	buf[1] = ' ';
+	strncpy( buf + 2, info.name, sizeof(buf) - 3 );
+	buf[ sizeof(buf) - 1 ] = 0;
+	drawOutlinedText( 2, y, buf, 15, kNT_textLeft );
 }
 
 bool	draw( _NT_algorithm* self )
