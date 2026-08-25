@@ -1173,6 +1173,19 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	NT_setParameterGrayedOut( algIdx, kParamQuarrel + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamSelectOffset + off, pThis->v[ kParamSelectMode ] == 0 );
 	NT_setParameterGrayedOut( algIdx, kParamPattern + off, pThis->v[ kParamStepMode ] != 5 );
+
+	// The phrase helpers all hang off triggerStep(), which counts phraseStep.
+	// Nothing else reaches it: a Random pulse, a MIDI note, and a trigger with
+	// a Select CV patched all address a slice directly and leave the phrase
+	// where it was. Gray them out when no path can drive them, so they do not
+	// look active while doing nothing.
+	bool stepped = ( pThis->v[ kParamTrigInput ] && !pThis->v[ kParamSelectInput ] )
+		|| ( pThis->v[ kParamClockInput ] && pThis->v[ kParamClockSource ] == kClockCV )
+		|| ( pThis->v[ kParamClockSource ] == kClockMidi );
+	NT_setParameterGrayedOut( algIdx, kParamPhraseReset + off, !stepped );
+	NT_setParameterGrayedOut( algIdx, kParamFillMode + off, !stepped );
+	NT_setParameterGrayedOut( algIdx, kParamGhostNote + off, !stepped );
+	NT_setParameterGrayedOut( algIdx, kParamRatchetRoll + off, !stepped );
 }
 
 // recompute the low-pass gate coefficients from the three LPG params
@@ -1227,6 +1240,11 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		break;
 	case kParamSelectMode:
 	case kParamStepMode:
+	// these decide whether any path reaches triggerStep, i.e. whether the
+	// phrase helpers can run at all
+	case kParamSelectInput:
+	case kParamTrigInput:
+	case kParamClockInput:
 		updateGrayedOut( pThis );
 		break;
 	case kParamClockSource:
@@ -1237,6 +1255,7 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		pThis->midiStepTicks = 0;
 		pThis->midiTickCount = 0;
 		pThis->midiLastQuarterFrame = pThis->frameClock;
+		updateGrayedOut( pThis );	// also selects which path drives the phrase
 		break;
 	case kParamFolder:
 	case kParamFolderB:
