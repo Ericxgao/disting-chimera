@@ -532,6 +532,8 @@ struct Loop
 	bool		loaded;
 	bool		sliced;
 	bool		analysed;
+	int32_t		loadedFolder;	// what is actually in `sample`, -1 if nothing.
+	int32_t		loadedSample;	// guards against re-reading a file we hold
 	uint32_t	numFrames;
 	uint32_t	numHops;
 	float		srRatio;		// file rate / host rate
@@ -564,6 +566,8 @@ struct OneShot
 {
 	float*		sample;		// DRAM: interleaved stereo floats
 	bool		loaded;
+	int32_t		loadedFolder;	// as Loop: what is in `sample`, -1 if nothing
+	int32_t		loadedSample;
 	uint32_t	numFrames;
 	float		srRatio;	// file rate / host rate
 };
@@ -862,6 +866,7 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 		L.hopPeak = L.onset + maxHops;
 		dram = L.hopPeak + maxHops;
 		L.srRatio = 1.0f;
+		L.loadedFolder = L.loadedSample = -1;
 	}
 	uint32_t beefCapFrames = (uint32_t)specifications[1] * 48000;
 	alg->beefCapFrames = beefCapFrames;
@@ -871,6 +876,7 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 		os.sample = dram;
 		dram += beefCapFrames * 2;
 		os.srRatio = 1.0f;
+		os.loadedFolder = os.loadedSample = -1;
 	}
 
 	alg->echo = dram;
@@ -969,6 +975,13 @@ static void startLoadOneShot( _breakSlicer* pThis, int slot )
 		return;
 	}
 
+	// already holding this file: a re-read would cost seconds and change
+	// nothing. Preset load fires parameterChanged for the folder and the
+	// sample, so without this every slot is read twice at startup.
+	if ( os.loaded && os.loadedFolder == (int32_t)pThis->v[ kParamBeefFolder ]
+		&& os.loadedSample == sampleIdx )
+		return;
+
 	os.loaded = false;
 	pThis->beefGate[ bi ] = 0.0f;
 	if ( pThis->beefVoice.active && pThis->beefVoice.loopIdx == bi )
@@ -989,6 +1002,9 @@ static void startLoadOneShot( _breakSlicer* pThis, int slot )
 	pThis->request.numFrames = os.numFrames;
 	pThis->request.dst = os.sample;
 
+	os.loadedFolder = pThis->v[ kParamBeefFolder ];
+	os.loadedSample = sampleIdx;
+
 	pThis->loadingSlot = slot;
 	if ( NT_readSampleFrames( pThis->request ) )
 		pThis->awaitingCallback = true;
@@ -1008,6 +1024,14 @@ static void startLoad( _breakSlicer* pThis, int slot )
 	_NT_wavInfo info;
 	NT_getSampleFileInfo( pThis->v[ loopFolderParam[li] ], pThis->v[ loopSampleParam[li] ], info );
 	if ( !info.name || !info.numFrames )
+		return;
+
+	// already holding this file: skip the read. Preset load fires
+	// parameterChanged for both the folder and the sample, so without this
+	// each head is read twice at startup, and re-selecting the sample you
+	// already have costs a full reload and cuts the playing voices.
+	if ( L.loaded && L.loadedFolder == (int32_t)pThis->v[ loopFolderParam[li] ]
+		&& L.loadedSample == (int32_t)pThis->v[ loopSampleParam[li] ] )
 		return;
 
 	L.loaded = false;
@@ -1036,6 +1060,9 @@ static void startLoad( _breakSlicer* pThis, int slot )
 	pThis->request.sample = pThis->v[ loopSampleParam[li] ];
 	pThis->request.numFrames = L.numFrames;
 	pThis->request.dst = L.sample;
+
+	L.loadedFolder = pThis->v[ loopFolderParam[li] ];
+	L.loadedSample = pThis->v[ loopSampleParam[li] ];
 
 	pThis->loadingSlot = li;
 	if ( NT_readSampleFrames( pThis->request ) )
