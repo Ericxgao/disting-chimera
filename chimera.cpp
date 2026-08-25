@@ -2802,6 +2802,31 @@ static void snapZero( _breakSlicer* pThis, Loop& L )
 	L.manualSlices = true;
 }
 
+// step one head's Sample parameter, clamped to the file count of its folder.
+// Written through the UI path so the host tracks the change and
+// parameterChanged() fires the load (requestLoad queues if one is in flight,
+// so spinning the encoder never stacks up reads).
+static void stepSampleParam( _breakSlicer* pThis, int li, int delta )
+{
+	int algIdx = NT_algorithmIndex( pThis );
+	if ( algIdx < 0 )
+		return;
+
+	int p = loopSampleParam[ li ];
+	int lo = pThis->params[ p ].min;
+	int hi = pThis->params[ p ].max;	// tracks the folder's file count
+	if ( hi <= lo )
+		return;
+
+	int v = pThis->v[ p ] + delta;
+	if ( v < lo ) v = lo;
+	if ( v > hi ) v = hi;
+	if ( v == pThis->v[ p ] )
+		return;
+
+	NT_setParameterFromUi( algIdx, p + NT_parameterOffset(), (int16_t)v );
+}
+
 // editor controls tracked for the legend's "last used" highlight
 enum
 {
@@ -2820,7 +2845,8 @@ enum
 uint32_t	hasCustomUi( _NT_algorithm* self )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
-	uint32_t mask = kNT_button1 | kNT_button2 | kNT_button3;	// b1 held: tame/wild   b2 held: retrig
+	// b1 held: tame/wild   b2 held: retrig   encoders: pick each head's sample
+	uint32_t mask = kNT_button1 | kNT_button2 | kNT_button3 | kNT_encoderL | kNT_encoderR;
 	if ( pThis->editMode )
 		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potButtonL | kNT_potButtonC | kNT_potR;
 	return mask;
@@ -2848,7 +2874,15 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 	pThis->manualRetrig = !pThis->editMode && ( data.controls & kNT_button2 );
 
 	if ( !pThis->editMode )
+	{
+		// performance view: the encoders always step the loaded sample --
+		// encoder L is Lion, encoder R is Goat (idle when only one head is on)
+		if ( data.encoders[0] )
+			stepSampleParam( pThis, 0, data.encoders[0] );
+		if ( data.encoders[1] && pThis->v[ kParamLoops ] )
+			stepSampleParam( pThis, 1, data.encoders[1] );
 		return;
+	}
 
 	Loop* L = &pThis->loops[ pThis->editLoop ];
 
@@ -3335,6 +3369,16 @@ static void drawOutlinedText( int x, int y, const char* str, int colour, _NT_tex
 	NT_drawText( x, y, str, colour, align, kNT_textTiny );
 }
 
+// the head's current WAV file name, drawn in the performance view so an
+// encoder-driven sample change is visible without opening the Lion/Goat page
+static void drawSampleName( _breakSlicer* pThis, int li, int y )
+{
+	_NT_wavInfo info;
+	NT_getSampleFileInfo( pThis->v[ loopFolderParam[li] ], pThis->v[ loopSampleParam[li] ], info );
+	if ( info.name )
+		drawOutlinedText( 2, y, info.name, 10, kNT_textLeft );
+}
+
 bool	draw( _NT_algorithm* self )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
@@ -3357,9 +3401,14 @@ bool	draw( _NT_algorithm* self )
 		drawStrip( pThis, 1, 40, 62, pThis->xfB );
 		drawOutlinedText( 128, 26, "LION", 12, kNT_textCentre );
 		drawOutlinedText( 128, 51, "GOAT", 12, kNT_textCentre );
+		drawSampleName( pThis, 0, 26 );
+		drawSampleName( pThis, 1, 51 );
 	}
 	else
+	{
 		drawStrip( pThis, 0, 18, 62, 1.0f );
+		drawSampleName( pThis, 0, 26 );
+	}
 
 	bool analysing = ( pThis->loops[0].loaded && !pThis->loops[0].analysed )
 		|| ( twoLoops && pThis->loops[1].loaded && !pThis->loops[1].analysed );
