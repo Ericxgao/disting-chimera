@@ -61,7 +61,7 @@
 enum
 {
 	kNumLoops		= 2,
-	kMaxSlices		= 32,
+	kMaxSlices		= 64,		// Loop::lockMask is the constraint: one bit per slice
 	kEchoFrames		= 48000,	// serpent delay line, 1s stereo
 	kWaveBuckets	= 128,		// waveform display resolution
 	kAnalysisHop	= 128,		// frames per onset-envelope hop
@@ -271,7 +271,7 @@ enum { kClockOff, kClockCV, kClockMidi };
 
 static const char* const loopsStrings[] = { "1", "2" };
 static const char* const blendModeStrings[] = { "Chance", "Xfade" };
-static const char* const sliceCountStrings[] = { "4", "8", "16", "32" };
+static const char* const sliceCountStrings[] = { "4", "8", "16", "32", "64" };
 static const char* const sliceModeStrings[] = { "Equal", "Transient", "Onsets" };
 static const char* const barsStrings[] = { "1", "2" };
 static const char* const stutterDivStrings[] = { "1/2", "1/4", "1/8", "1/16", "Random" };
@@ -327,8 +327,8 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Lion sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Goat folder", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitHasStrings, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Goat sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
-	{ .name = "Slices", .min = 0, .max = 3, .def = 2, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceCountStrings },
-	{ .name = "Slice mode", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceModeStrings },
+	{ .name = "Slices", .min = 0, .max = 4, .def = 2, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceCountStrings },
+	{ .name = "Slice mode", .min = 0, .max = 2, .def = kSliceOnsets, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceModeStrings },
 	{ .name = "Bars", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = barsStrings },
 
 	NT_PARAMETER_CV_INPUT( "Select input", 0, 0 )
@@ -557,7 +557,7 @@ struct Loop
 	uint32_t	sliceStart[ kMaxSlices + 1 ];
 	int			numSlices;
 	bool		manualSlices;	// user-moved points; auto re-slice won't clobber
-	uint32_t	lockMask;		// locked slice always plays straight
+	uint64_t	lockMask;		// locked slice always plays straight, one bit per slice
 	uint8_t		sliceRole[ kMaxSlices ];	// drum-role tag per slice (kRole*)
 
 	// manual points restored from a preset, waiting for the sample to load
@@ -3219,7 +3219,7 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 
 	if ( pressed & kNT_potButtonL )
 	{
-		L->lockMask ^= 1u << pThis->selPoint;	// lock slice starting at this point
+		L->lockMask ^= 1ull << pThis->selPoint;	// lock slice starting at this point
 		pThis->lastControl = kCtrlPotL;
 	}
 
@@ -3459,7 +3459,11 @@ static bool drawEditor( _breakSlicer* pThis )
 // serialisation: manual slice points, locks and role tags persist in the preset
 
 static const char* const kJsonSliceNames[ kNumLoops ] = { "slicePoints", "slicePointsB" };
+// The lock mask is 64 bits but the json stream only carries int, so it splits.
+// The low half keeps the original member name and meaning, which is what makes
+// presets written before the 64-slice change still restore.
 static const char* const kJsonLockNames[ kNumLoops ] = { "locks", "locksB" };
+static const char* const kJsonLockHiNames[ kNumLoops ] = { "locksHi", "locksHiB" };
 static const char* const kJsonRoleNames[ kNumLoops ] = { "roles", "rolesB" };
 
 void	serialise( _NT_algorithm* self, _NT_jsonStream& stream )
@@ -3473,7 +3477,14 @@ void	serialise( _NT_algorithm* self, _NT_jsonStream& stream )
 		if ( L.lockMask )
 		{
 			stream.addMemberName( kJsonLockNames[li] );
-			stream.addNumber( (int)L.lockMask );
+			stream.addNumber( (int)(uint32_t)L.lockMask );
+			// only written once a slice past 32 is locked, so a preset that
+			// stays inside the old range reads back identically on old builds
+			if ( L.lockMask >> 32 )
+			{
+				stream.addMemberName( kJsonLockHiNames[li] );
+				stream.addNumber( (int)(uint32_t)( L.lockMask >> 32 ) );
+			}
 		}
 
 		if ( L.manualSlices && L.sliced )
@@ -3517,12 +3528,22 @@ bool	deserialise( _NT_algorithm* self, _NT_jsonParse& parse )
 		{
 			Loop& L = pThis->loops[li];
 
+			// both halves OR in rather than assign: the members can arrive in
+			// either order, and the high one is absent from older presets
 			if ( parse.matchName( kJsonLockNames[li] ) )
 			{
 				int v;
 				if ( !parse.number( v ) )
 					return false;
-				L.lockMask = (uint32_t)v;
+				L.lockMask |= (uint32_t)v;
+				matched = true;
+			}
+			else if ( parse.matchName( kJsonLockHiNames[li] ) )
+			{
+				int v;
+				if ( !parse.number( v ) )
+					return false;
+				L.lockMask |= (uint64_t)(uint32_t)v << 32;
 				matched = true;
 			}
 			else if ( parse.matchName( kJsonSliceNames[li] ) )
