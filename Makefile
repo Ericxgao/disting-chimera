@@ -45,19 +45,33 @@ check: $(inputs)
 	@echo "syntax OK"
 
 # push the built plug-in to the module over USB MIDI SysEx, then rescan.
-# Needs python-rtmidi, and the algorithm removed from the running preset --
-# the firmware refuses to rescan a plug-in that is still loaded, so a "still
-# in use" failure means "delete the algorithm", not "the file did not arrive".
+# Needs python-rtmidi.
+#
+# The rescan resets the whole plug-in list, so it is refused while *any*
+# plug-in is in use -- not just this one. `make scan` names the culprit
+# (the one marked "loaded"); remove that algorithm from the preset on the
+# module and `make rescan`. The push has already happened by then, so there
+# is no need to deploy again.
 NT_TOOL ?= ../disting-nt-plugins/tools/nt_plugin.py
 
-# the guard is a make function, not a shell test, so it reports the same way
-# whichever shell the recipe ends up running under
+# expanded inside a recipe, so a bad path is reported when a tool target runs
+# rather than on every make. A make function, not a shell test, so it reads the
+# same whichever shell the recipe ends up under.
+nt_tool = $(if $(wildcard $(NT_TOOL)),$(NT_TOOL),$(error nt_plugin.py not found: $(NT_TOOL) -- override with: make $@ NT_TOOL=/path/to/nt_plugin.py))
+
 deploy: all
-	$(if $(wildcard $(NT_TOOL)),,$(error deploy tool not found: $(NT_TOOL) -- override with: make deploy NT_TOOL=/path/to/nt_plugin.py))
-	python "$(NT_TOOL)" deploy $(outputs)
+	python "$(nt_tool)" deploy $(outputs)
+
+# reset and rescan the plug-in list, without pushing again
+rescan:
+	python "$(nt_tool)" rescan
+
+# which plug-ins the module found, and which are currently loaded
+scan:
+	python "$(nt_tool)" scan
 
 # which MIDI ports the deploy tool can see
 ports:
-	python "$(NT_TOOL)" ports
+	python "$(nt_tool)" ports
 
-.PHONY: all clean check deploy ports
+.PHONY: all clean check deploy rescan scan ports
