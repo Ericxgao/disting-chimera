@@ -744,9 +744,8 @@ static int pickOnsets( _breakSlicer* pThis, Loop& L )
 
 	float sens = pThis->v[ kParamSensitivity ] / 100.0f;
 	// at 100 a peak need only clear the local mean; at 0 it must stand well
-	// above it and be a decent fraction of the loudest onset in the loop
-	float mult = 3.0f - 2.0f * sens;			// 3.0 .. 1.0
-	float floorFrac = 0.20f * ( 1.0f - sens );	// 0.20 .. 0.0
+	// above it
+	float mult = 2.5f - 1.9f * sens;			// 2.5 .. 0.6
 
 	float gMax = 0.0f;
 	for ( uint32_t h=0; h<L.numHops; ++h )
@@ -754,7 +753,15 @@ static int pickOnsets( _breakSlicer* pThis, Loop& L )
 			gMax = L.onset[h];
 	if ( gMax <= 0.0f )
 		return 0;
-	float absFloor = gMax * floorFrac;
+
+	// Absolute floor as a fraction of the loudest onset, swept in the log
+	// domain. Onset strengths within a break bunch up towards the top -- ghost
+	// notes sit maybe 6-16dB under the kicks, not 40 -- so a linear sweep
+	// spends most of its travel below everything and the count saturates in
+	// the first third of the knob.
+	const float kFloorHi = 0.60f;	// fraction of the loudest onset at Sensitivity 0
+	const float kFloorLo = 0.08f;	// ... and at 100
+	float absFloor = gMax * kFloorHi * powf( kFloorLo / kFloorHi, sens );
 
 	// silence gate, as the batcher's: an onset in the noise floor of a decaying
 	// tail is a false positive however well it clears the local mean
@@ -772,7 +779,7 @@ static int pickOnsets( _breakSlicer* pThis, Loop& L )
 
 	// sliding window sum over +/- kWin hops, kept incrementally so the scan
 	// stays linear -- it runs in the step() call that finishes analysis
-	const uint32_t kWin = 16;		// ~43ms either side at 48k
+	const uint32_t kWin = 24;		// ~64ms either side at 48k
 	float sum = 0.0f;
 	uint32_t wlo = 0, whi = 0;
 
