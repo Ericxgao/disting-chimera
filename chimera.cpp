@@ -255,8 +255,16 @@ enum
 	kParamGhostNote,
 	kParamRatchetRoll,
 
+	// appended, not inserted: presets store parameters by index, so anything
+	// added in the middle would shift every later one
+	kParamSensitivity,
+
 	kNumParams,
 };
+
+// Slice mode. Equal and Transient both lay down a fixed grid of Slices
+// points; Onsets lets the detector decide how many there are.
+enum { kSliceEqual, kSliceTransient, kSliceOnsets };
 
 // which clock, if any, advances the sequence (tempo for Sync is still measured)
 enum { kClockOff, kClockCV, kClockMidi };
@@ -264,7 +272,7 @@ enum { kClockOff, kClockCV, kClockMidi };
 static const char* const loopsStrings[] = { "1", "2" };
 static const char* const blendModeStrings[] = { "Chance", "Xfade" };
 static const char* const sliceCountStrings[] = { "4", "8", "16", "32" };
-static const char* const sliceModeStrings[] = { "Equal", "Transient" };
+static const char* const sliceModeStrings[] = { "Equal", "Transient", "Onsets" };
 static const char* const barsStrings[] = { "1", "2" };
 static const char* const stutterDivStrings[] = { "1/2", "1/4", "1/8", "1/16", "Random" };
 static const char* const syncModeStrings[] = { "Off", "Stretch", "Repitch" };
@@ -320,7 +328,7 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Goat folder", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitHasStrings, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Goat sample", .min = 0, .max = 32767, .def = 0, .unit = kNT_unitConfirm, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Slices", .min = 0, .max = 3, .def = 2, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceCountStrings },
-	{ .name = "Slice mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceModeStrings },
+	{ .name = "Slice mode", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = sliceModeStrings },
 	{ .name = "Bars", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = barsStrings },
 
 	NT_PARAMETER_CV_INPUT( "Select input", 0, 0 )
@@ -407,9 +415,11 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Phrase reset", .min = 0, .max = 4, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = phraseResetStrings },
 	{ .name = "Ghost note", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Ratchet roll", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "Sensitivity", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 };
 
-static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamBars };
+static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamSensitivity, kParamBars };
 static const uint8_t pageLion[] = { kParamFolder, kParamSample, kParamLionLevel, kParamLionRate, kParamLionPitch, kParamLionFilter };
 static const uint8_t pageGoat[] = { kParamFolderB, kParamSampleB, kParamGoatLevel, kParamGoatRate, kParamGoatPitch, kParamGoatFilter };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
@@ -718,8 +728,139 @@ static int canonicalSlices( _breakSlicer* pThis )
 // ---------------------------------------------------------------------------
 // slicing
 
+// Pick slice points from the onset envelope, variable count (Onsets mode).
+// Writes ascending frame positions into L.sliceStart[1..] and returns how
+// many, at most kMaxSlices-1 interior points.
+//
+// The envelope L.onset[] is a positive-rectified energy difference per hop,
+// so its scale follows the material. A fixed threshold on it would mean a
+// different thing for every file; what makes Sensitivity portable is testing
+// each peak against the *local mean* of the envelope around it.
+static int pickOnsets( _breakSlicer* pThis, Loop& L )
+{
+	const int maxPts = kMaxSlices - 1;
+	if ( L.numHops < 3 )
+		return 0;
+
+	float sens = pThis->v[ kParamSensitivity ] / 100.0f;
+	// at 100 a peak need only clear the local mean; at 0 it must stand well
+	// above it and be a decent fraction of the loudest onset in the loop
+	float mult = 3.0f - 2.0f * sens;			// 3.0 .. 1.0
+	float floorFrac = 0.20f * ( 1.0f - sens );	// 0.20 .. 0.0
+
+	float gMax = 0.0f;
+	for ( uint32_t h=0; h<L.numHops; ++h )
+		if ( L.onset[h] > gMax )
+			gMax = L.onset[h];
+	if ( gMax <= 0.0f )
+		return 0;
+	float absFloor = gMax * floorFrac;
+
+	// silence gate, as the batcher's: an onset in the noise floor of a decaying
+	// tail is a false positive however well it clears the local mean
+	float silence = L.waveMax * 0.02f;
+
+	// keep hits musically apart. 30ms is around the batcher's 35-50ms minioi,
+	// and never below the engine's own floor
+	uint32_t minGap = (uint32_t)( NT_globals.sampleRate * 0.03f );
+	if ( minGap < kMinSliceFrames )
+		minGap = kMinSliceFrames;
+
+	uint32_t pos[ kMaxSlices ];		// ascending; parallel arrays
+	float str[ kMaxSlices ];
+	int count = 0;
+
+	// sliding window sum over +/- kWin hops, kept incrementally so the scan
+	// stays linear -- it runs in the step() call that finishes analysis
+	const uint32_t kWin = 16;		// ~43ms either side at 48k
+	float sum = 0.0f;
+	uint32_t wlo = 0, whi = 0;
+
+	for ( uint32_t h=0; h<L.numHops; ++h )
+	{
+		uint32_t nlo = ( h > kWin ) ? h - kWin : 0;
+		uint32_t nhi = h + kWin + 1;
+		if ( nhi > L.numHops )
+			nhi = L.numHops;
+		while ( whi < nhi ) sum += L.onset[ whi++ ];
+		while ( wlo < nlo ) sum -= L.onset[ wlo++ ];
+		float mean = ( whi > wlo ) ? sum / (float)( whi - wlo ) : 0.0f;
+
+		float v = L.onset[h];
+		if ( v < absFloor || v <= mean * mult )
+			continue;
+		// local maximum, so one attack yields one point rather than a cluster.
+		// >= on the right so a flat-topped pair resolves to its first hop.
+		if ( ( h && L.onset[h-1] > v ) || ( h + 1 < L.numHops && L.onset[h+1] >= v ) )
+			continue;
+		if ( L.hopPeak[h] < silence )
+			continue;
+
+		uint32_t p = h * kAnalysisHop;
+		if ( p < minGap || p + minGap > L.numFrames )
+			continue;	// too close to either end to be its own slice
+
+		if ( count && p < pos[ count-1 ] + minGap )
+		{
+			// same attack seen twice: keep whichever hop is stronger
+			if ( v > str[ count-1 ] )
+			{
+				pos[ count-1 ] = p;
+				str[ count-1 ] = v;
+			}
+			continue;
+		}
+
+		if ( count == maxPts )
+		{
+			// full: give up the weakest so far, but only for something better,
+			// so a busy break keeps its strongest hits rather than its first
+			int weakest = 0;
+			for ( int i=1; i<count; ++i )
+				if ( str[i] < str[ weakest ] )
+					weakest = i;
+			if ( str[ weakest ] >= v )
+				continue;
+			for ( int i=weakest; i<count-1; ++i )
+			{
+				pos[i] = pos[i+1];
+				str[i] = str[i+1];
+			}
+			--count;	// positions stay ascending: we only ever append below
+		}
+
+		pos[ count ] = p;
+		str[ count ] = v;
+		++count;
+	}
+
+	for ( int i=0; i<count; ++i )
+		L.sliceStart[ i+1 ] = pos[i];
+	return count;
+}
+
 static void computeSlices( _breakSlicer* pThis, Loop& L )
 {
+	// Onsets mode: the detector sets the count, so the Slices grid is unused.
+	// Falls through to the grid when nothing is found, rather than leaving the
+	// whole loop as a single slice.
+	if ( pThis->v[ kParamSliceMode ] == kSliceOnsets && L.analysed && L.numFrames )
+	{
+		int found = pickOnsets( pThis, L );
+		if ( found > 0 )
+		{
+			L.numSlices = found + 1;
+			L.sliceStart[0] = 0;
+			L.sliceStart[ found + 1 ] = L.numFrames;
+			L.sliced = true;
+			if ( pThis->selPoint >= L.numSlices )
+				pThis->selPoint = L.numSlices - 1;
+			if ( pThis->selPoint < 0 )
+				pThis->selPoint = 0;
+			return;
+		}
+	}
+
 	int n = 4 << pThis->v[ kParamSlices ];
 
 	uint32_t total = L.numFrames;
@@ -1174,6 +1315,12 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	NT_setParameterGrayedOut( algIdx, kParamSelectOffset + off, pThis->v[ kParamSelectMode ] == 0 );
 	NT_setParameterGrayedOut( algIdx, kParamPattern + off, pThis->v[ kParamStepMode ] != 5 );
 
+	// in Onsets mode the detector sets the count, so the Slices grid does
+	// nothing; everywhere else Sensitivity does nothing
+	bool onsets = ( pThis->v[ kParamSliceMode ] == kSliceOnsets );
+	NT_setParameterGrayedOut( algIdx, kParamSlices + off, onsets );
+	NT_setParameterGrayedOut( algIdx, kParamSensitivity + off, !onsets );
+
 	// The phrase helpers all hang off triggerStep(), which counts phraseStep.
 	// Nothing else reaches it: a Random pulse, a MIDI note, and a trigger with
 	// a Select CV patched all address a slice directly and leave the phrase
@@ -1303,6 +1450,7 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		break;
 	case kParamSlices:
 	case kParamSliceMode:
+	case kParamSensitivity:
 		for ( int li=0; li<kNumLoops; ++li )
 		{
 			Loop& L = pThis->loops[li];
@@ -1310,6 +1458,8 @@ void	parameterChanged( _NT_algorithm* self, int p )
 			if ( L.loaded )
 				computeSlices( pThis, L );
 		}
+		if ( p != kParamSensitivity )
+			updateGrayedOut( pThis );
 		break;
 	case kParamLevel:
 		pThis->gainTarget = powf( 10.0f, pThis->v[ kParamLevel ] / 20.0f );
