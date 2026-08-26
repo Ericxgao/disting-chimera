@@ -1469,6 +1469,23 @@ static void updateLpg( _breakSlicer* pThis )
 	pThis->lpgDecayFrac = pThis->v[ kParamLpgDecay ] / 100.0f;
 }
 
+// refresh a head's Sample param maximum from its Folder parameter.
+//
+// Also has to run when the card mounts, not just when the Folder changes: a
+// preset restores before the mount, so the Folder case in parameterChanged
+// queries an empty card, gets no files, and latches a maximum of 0. That
+// leaves the head pinned to one sample -- the encoder and the menu both refuse
+// to move -- until something changes the Folder and recomputes it, which is
+// why leaving the folder and coming back appears to fix it.
+static void refreshLoopSampleMax( _breakSlicer* pThis, int algIdx, int li )
+{
+	_NT_wavFolderInfo folderInfo;
+	NT_getSampleFolderInfo( pThis->v[ loopFolderParam[li] ], folderInfo );
+	pThis->params[ loopSampleParam[li] ].max =
+		folderInfo.numSampleFiles ? folderInfo.numSampleFiles - 1 : 0;
+	NT_updateParameterDefinition( algIdx, loopSampleParam[li] );
+}
+
 // refresh the per-role beef Sample param maxima from the shared Beef folder
 static void refreshBeefSampleMax( _breakSlicer* pThis, int algIdx )
 {
@@ -1522,14 +1539,10 @@ void	parameterChanged( _NT_algorithm* self, int p )
 	case kParamFolder:
 	case kParamFolderB:
 	{
-		int sampleParam = ( p == kParamFolder ) ? kParamSample : kParamSampleB;
-		_NT_wavFolderInfo folderInfo;
-		NT_getSampleFolderInfo( pThis->v[ p ], folderInfo );
-		pThis->params[ sampleParam ].max = folderInfo.numSampleFiles ? folderInfo.numSampleFiles - 1 : 0;
-		NT_updateParameterDefinition( NT_algorithmIndex( self ), sampleParam );
+		int li = ( p == kParamFolder ) ? 0 : 1;
+		refreshLoopSampleMax( pThis, NT_algorithmIndex( self ), li );
 		// folder change alone never fires the sample param, so kick the
 		// load of the (now re-clamped) current index here
-		int li = ( p == kParamFolder ) ? 0 : 1;
 		pThis->browseSample[li] = -1;	// indices mean a different folder now
 		if ( li == 0 || pThis->v[ kParamLoops ] )
 			requestLoad( pThis, li );
@@ -2705,6 +2718,10 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 			NT_updateParameterDefinition( NT_algorithmIndex( self ), kParamFolder );
 			NT_updateParameterDefinition( NT_algorithmIndex( self ), kParamFolderB );
 			NT_updateParameterDefinition( NT_algorithmIndex( self ), kParamBeefFolder );
+			// the Sample maxima were computed against an unmounted card when
+			// the preset restored, so they read 0 until redone here
+			for ( int li=0; li<kNumLoops; ++li )
+				refreshLoopSampleMax( pThis, NT_algorithmIndex( self ), li );
 			// presets may have loaded before the card mounted
 			if ( !pThis->loops[0].loaded )
 				requestLoad( pThis, 0 );
