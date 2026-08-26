@@ -729,6 +729,7 @@ struct _breakSlicer : public _NT_algorithm
 	// pattern stable while you ride the fader.
 	uint8_t			maskVal[ 32 ];	// 0..99 per step, longest supported length
 	uint32_t		maskPos;		// step counter, advanced per slice event
+	uint32_t		seedToast;		// frames left showing the seed after a re-roll
 
 	// ghost notes: quiet straight hits scheduled between sequenced steps
 	Voice			ghost, ghostFade;
@@ -2811,6 +2812,10 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 
 	int numFrames = numFramesBy4 * 4;
 
+	if ( pThis->seedToast )
+		pThis->seedToast = ( pThis->seedToast > (uint32_t)numFrames )
+			? pThis->seedToast - numFrames : 0;
+
 	float* outL = busFrames + ( pv[ kParamOutputL ] - 1 ) * numFrames;
 	float* outR = busFrames + ( pv[ kParamOutputR ] - 1 ) * numFrames;
 	bool replace = pv[ kParamOutputMode ];
@@ -3258,6 +3263,31 @@ static void randomSampleParam( _breakSlicer* pThis, int li )
 	loadSampleParam( pThis, li, v );
 }
 
+// re-roll the Mask pattern. Writing the seed through the UI path fires
+// parameterChanged, which rebuilds the field.
+static void rollMaskSeed( _breakSlicer* pThis )
+{
+	int algIdx = NT_algorithmIndex( pThis );
+	if ( algIdx < 0 )
+		return;
+
+	int lo = pThis->params[ kParamMaskSeed ].min;
+	int hi = pThis->params[ kParamMaskSeed ].max;
+	int span = hi - lo;
+	if ( span < 1 )
+		return;
+
+	pThis->uiRng.seed( pThis->uiRng.next() ^ pThis->frameClock );
+	// uniform over the seeds that are not the current one, so a press always
+	// changes the pattern
+	int v = lo + (int)( pThis->uiRng.next() % (uint32_t)span );
+	if ( v >= pThis->v[ kParamMaskSeed ] )
+		++v;
+
+	NT_setParameterFromUi( algIdx, kParamMaskSeed + NT_parameterOffset(), (int16_t)v );
+	pThis->seedToast = (uint32_t)NT_globals.sampleRate;	// ~1s of confirmation
+}
+
 // the encoder push: commit a pending browse, or -- when nothing is pending --
 // roll a random sample from the folder. Pushing repeatedly re-rolls.
 static void pushSampleEncoder( _breakSlicer* pThis, int li )
@@ -3286,9 +3316,9 @@ enum
 uint32_t	hasCustomUi( _NT_algorithm* self )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
-	// b1 held: tame/wild   b2 held: retrig
+	// b1 held: tame/wild   b2 held: retrig   pot 3 push: re-roll the Mask
 	// encoders: browse each head's sample, push to load it
-	uint32_t mask = kNT_button1 | kNT_button2 | kNT_button3
+	uint32_t mask = kNT_button1 | kNT_button2 | kNT_button3 | kNT_potButtonR
 		| kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR;
 	if ( pThis->editMode )
 		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potButtonL | kNT_potButtonC | kNT_potR;
@@ -3332,6 +3362,13 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 				browseSampleParam( pThis, 1, data.encoders[1] );
 			if ( pressed & kNT_encoderButtonR )
 				pushSampleEncoder( pThis, 1 );
+
+			// pot 3 push re-rolls the Mask pattern. Only in Mask mode -- the
+			// seed does nothing in Chance or Xfade, so a press there would
+			// silently change a parameter with no audible result.
+			if ( ( pressed & kNT_potButtonR )
+				&& pThis->v[ kParamBlendMode ] == kBlendMask )
+				rollMaskSeed( pThis );
 		}
 		return;
 	}
@@ -3908,6 +3945,18 @@ bool	draw( _NT_algorithm* self )
 		NT_drawText( 254, 30, "wild", 15, kNT_textRight, kNT_textTiny );
 	else if ( analysing && pThis->v[ kParamSliceMode ] )
 		NT_drawText( 254, 30, "analysing", 8, kNT_textRight, kNT_textTiny );
+
+	// brief confirmation after a pot-3 re-roll: the pattern is audible but the
+	// seed is not, and it is worth knowing which one you have landed on
+	if ( pThis->seedToast )
+	{
+		char buf[24];
+		int n = 0;
+		buf[n++] = 's'; buf[n++] = 'e'; buf[n++] = 'e'; buf[n++] = 'd'; buf[n++] = ' ';
+		n += NT_intToString( buf + n, pThis->v[ kParamMaskSeed ] );
+		buf[n] = 0;
+		drawOutlinedText( 128, 10, buf, 15, kNT_textCentre );
+	}
 
 	if ( pThis->v[ kParamSync ] && pThis->clockPeriod > 0.0f )
 	{
