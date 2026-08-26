@@ -258,6 +258,8 @@ enum
 	// appended, not inserted: presets store parameters by index, so anything
 	// added in the middle would shift every later one
 	kParamSensitivity,
+	kParamMaskLength,
+	kParamMaskSeed,
 
 	kNumParams,
 };
@@ -270,7 +272,12 @@ enum { kSliceEqual, kSliceTransient, kSliceOnsets };
 enum { kClockOff, kClockCV, kClockMidi };
 
 static const char* const loopsStrings[] = { "1", "2" };
-static const char* const blendModeStrings[] = { "Chance", "Xfade" };
+static const char* const blendModeStrings[] = { "Chance", "Xfade", "Mask" };
+enum { kBlendChance, kBlendXfade, kBlendMask };
+
+// Mask mode pattern lengths, in slice events
+static const char* const maskLenStrings[] = { "4", "8", "16", "32" };
+static const int maskLenValues[] = { 4, 8, 16, 32 };
 static const char* const sliceCountStrings[] = { "4", "8", "16", "32", "64" };
 static const char* const sliceModeStrings[] = { "Equal", "Transient", "Onsets" };
 static const char* const barsStrings[] = { "1", "2" };
@@ -354,7 +361,7 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Filter", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Serpent", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Blend", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
-	{ .name = "Blend mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = blendModeStrings },
+	{ .name = "Blend mode", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = blendModeStrings },
 	{ .name = "Quarrel", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Break", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
@@ -417,6 +424,8 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Ratchet roll", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
 	{ .name = "Sensitivity", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
+	{ .name = "Mask length", .min = 0, .max = 3, .def = 2, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = maskLenStrings },
+	{ .name = "Mask seed", .min = 0, .max = 255, .def = 0, .unit = kNT_unitNone, .scaling = 0, .enumStrings = NULL },
 };
 
 static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamSensitivity, kParamBars };
@@ -424,7 +433,7 @@ static const uint8_t pageLion[] = { kParamFolder, kParamSample, kParamLionLevel,
 static const uint8_t pageGoat[] = { kParamFolderB, kParamSampleB, kParamGoatLevel, kParamGoatRate, kParamGoatPitch, kParamGoatFilter };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
 static const uint8_t pageSeq[] = { kParamClockSource, kParamSync, kParamClockDiv, kParamStepMode, kParamPattern, kParamPhraseReset, kParamFillMode, kParamGhostNote, kParamRandomMode, kParamRatchetDiv, kParamRatchetRoll, kParamMidiChannel };
-static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamQuarrel, kParamBreak, kParamBackbeat, kParamHoldMode };
+static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamMaskLength, kParamMaskSeed, kParamQuarrel, kParamBreak, kParamBackbeat, kParamHoldMode };
 static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive, kParamLpg, kParamLpgDecay, kParamLpgRes };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel,
 	kParamBeefGateKick, kParamBeefGateSnare, kParamBeefGatePerc, kParamBeefGateHat, kParamBeefGateCrash };
@@ -713,6 +722,14 @@ struct _breakSlicer : public _NT_algorithm
 	Voice			curB, fadeB;	// second layer, used only in xfade blend mode
 	float			xfA, xfB;		// smoothed crossfade amplitudes
 
+	// Blend mode: Mask. A fixed field of per-step thresholds drawn from the
+	// seed, not a bit pattern -- Blend is then a level that sweeps across it,
+	// so raising Blend brings steps over to Goat in a repeatable order and
+	// Quarrel still wanders. Regenerating only on seed change keeps the
+	// pattern stable while you ride the fader.
+	uint8_t			maskVal[ 32 ];	// 0..99 per step, longest supported length
+	uint32_t		maskPos;		// step counter, advanced per slice event
+
 	// ghost notes: quiet straight hits scheduled between sequenced steps
 	Voice			ghost, ghostFade;
 	float			ghostAmp, ghostFadeAmp, ghostNextAmp;
@@ -731,6 +748,18 @@ struct _breakSlicer : public _NT_algorithm
 	// and an interleaved read/write there would disturb their sequence
 	Rng				uiRng;
 };
+
+// Draw the Mask field from the seed. Deterministic, so the same seed always
+// gives the same pattern -- that is the point of it over Chance, which rerolls
+// every event and never repeats. Its own Rng, since the audio thread's is
+// mid-sequence and reseeding it would disturb the FX dice.
+static void buildMask( _breakSlicer* pThis )
+{
+	Rng r;
+	r.seed( (uint32_t)pThis->v[ kParamMaskSeed ] * 2654435761u + 1u );
+	for ( unsigned i=0; i<ARRAY_SIZE(pThis->maskVal); ++i )
+		pThis->maskVal[i] = (uint8_t)( r.next() % 100 );
+}
 
 // the slice count used for sequencing / CV / MIDI addressing (loop A is master)
 static int canonicalSlices( _breakSlicer* pThis )
@@ -1124,6 +1153,7 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 	alg->ppDir = 1;
 	alg->rng.seed( 0xBEA7BEA7u );
 	alg->uiRng.seed( 0x5EED10AFu );
+	buildMask( alg );	// before any parameterChanged, so the field is never all-zero
 
 	return alg;
 }
@@ -1427,6 +1457,10 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	NT_setParameterGrayedOut( algIdx, kParamBlend + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamBlendMode + off, gray );
 	NT_setParameterGrayedOut( algIdx, kParamQuarrel + off, gray );
+	// the mask controls need two heads and the Mask blend mode to do anything
+	bool mask = !gray && ( pThis->v[ kParamBlendMode ] == kBlendMask );
+	NT_setParameterGrayedOut( algIdx, kParamMaskLength + off, !mask );
+	NT_setParameterGrayedOut( algIdx, kParamMaskSeed + off, !mask );
 	NT_setParameterGrayedOut( algIdx, kParamSelectOffset + off, pThis->v[ kParamSelectMode ] == 0 );
 	NT_setParameterGrayedOut( algIdx, kParamPattern + off, pThis->v[ kParamStepMode ] != 5 );
 
@@ -1517,6 +1551,10 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		if ( !pThis->v[ kParamLoops ] )
 			pThis->editLoop = 0;
 		break;
+	case kParamMaskSeed:
+		buildMask( pThis );
+		break;
+	case kParamBlendMode:
 	case kParamSelectMode:
 	case kParamStepMode:
 	// these decide whether any path reaches triggerStep, i.e. whether the
@@ -1683,6 +1721,7 @@ static void resetSequencer( _breakSlicer* pThis )
 	pThis->seqStep = 0;
 	pThis->stepPhase = 0;
 	pThis->phraseStep = 0;
+	pThis->maskPos = 0;		// Reset re-aligns the mask to the top of its pattern
 	pThis->roleRandomPhase = 0;
 	pThis->ppDir = 1;
 	pThis->shufflePos = 0;
@@ -2093,7 +2132,11 @@ static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos, float diceB
 
 	bool twoLoops = pv[ kParamLoops ] && pThis->loops[1].sliced;
 
-	if ( twoLoops && pv[ kParamBlendMode ] )
+	// the Mask step advances on every event, whichever path triggered it, so
+	// the pattern holds under CV and MIDI as well as the clock
+	uint32_t maskStep = pThis->maskPos++;
+
+	if ( twoLoops && pv[ kParamBlendMode ] == kBlendXfade )
 	{
 		// Xfade: both loops play the slice, amplitudes crossfaded by Blend
 		startVoice( pThis, pThis->cur, pThis->fade, &pThis->loops[0], idx, rolls );
@@ -2102,12 +2145,18 @@ static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos, float diceB
 	else
 	{
 		// Chance: Blend = probability of drawing the event from loop B
+		// Mask: Blend is a level across the seeded field, so the same steps
+		// go to loop B every time the pattern comes round
 		Loop* lp = &pThis->loops[0];
 		if ( twoLoops )
 		{
+			int len = maskLenValues[ pv[ kParamMaskLength ] ];
+			bool goat = ( pv[ kParamBlendMode ] == kBlendMask )
+				? ( pThis->maskVal[ maskStep % (uint32_t)len ] < effectiveBlend( pThis ) )
+				: ( pThis->rng.uniform() * 100.0f ) < effectiveBlend( pThis );
 			if ( !pThis->loops[0].sliced )
 				lp = &pThis->loops[1];
-			else if ( ( pThis->rng.uniform() * 100.0f ) < effectiveBlend( pThis ) )
+			else if ( goat )
 				lp = &pThis->loops[1];
 		}
 		startVoice( pThis, pThis->cur, pThis->fade, lp, idx, rolls );
@@ -2799,7 +2848,7 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 
 	// crossfade amplitude targets (equal power in Xfade mode, unity otherwise)
 	float xfTargetA = 1.0f, xfTargetB = 1.0f;
-	if ( pv[ kParamLoops ] && pv[ kParamBlendMode ] )
+	if ( pv[ kParamLoops ] && pv[ kParamBlendMode ] == kBlendXfade )
 	{
 		float b = effectiveBlend( pThis ) * ( 3.14159265f / 200.0f );	// 0..pi/2
 		xfTargetA = cosf( b );
