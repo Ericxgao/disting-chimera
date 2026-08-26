@@ -727,9 +727,13 @@ struct _breakSlicer : public _NT_algorithm
 	// so raising Blend brings steps over to Goat in a repeatable order and
 	// Quarrel still wanders. Regenerating only on seed change keeps the
 	// pattern stable while you ride the fader.
-	// indexed by the event's rhythmic position, not by a counter, so extra
-	// events (ratchets, ghosts, random pulses) cannot slip the pattern
 	uint8_t			maskVal[ 32 ];	// 0..99 per step, longest supported length
+	// clock ticks since Reset, for the Mask. Counts ticks and nothing else:
+	// ratchets, ghosts and random pulses are extra events, and advancing on
+	// those slipped the pattern against the bar. Unwrapped, so the mask period
+	// is its own length rather than the slice count -- the lengths are powers
+	// of two, so even the uint32 wrap lands cleanly on a pattern boundary.
+	uint32_t		barTick;
 	uint32_t		seedToast;		// frames left showing the seed after a re-roll
 
 	// ghost notes: quiet straight hits scheduled between sequenced steps
@@ -1723,6 +1727,7 @@ static void resetSequencer( _breakSlicer* pThis )
 	pThis->seqStep = 0;
 	pThis->stepPhase = 0;
 	pThis->phraseStep = 0;
+	pThis->barTick = 0;		// Reset puts the mask back to the top of its pattern
 	pThis->roleRandomPhase = 0;
 	pThis->ppDir = 1;
 	pThis->shufflePos = 0;
@@ -1733,8 +1738,26 @@ static void resetSequencer( _breakSlicer* pThis )
 	pThis->ghostPending = false;
 }
 
+// How many clock ticks make a bar. One tick advances one slice, so answering
+// this with the slice count -- as this did -- is only right when the slice
+// count happens to match the clock division. It does for 16 slices fed 16ths,
+// and not at all in Onsets mode, where the detector picks the count: a 27-slice
+// break then made a "bar" 27 ticks long, so Phrase reset, Fill, Ghost note and
+// Pattern all ran against a bar that was not one.
+//
+// Clock div states the tick length directly, so use it. 4/4 assumed, as
+// elsewhere in the file.
 static int stepsPerBar( _breakSlicer* pThis, int n )
 {
+	int div = pThis->v[ kParamClockDiv ];
+	if ( div > 0 )		// entry 0 is Auto, which states no division
+	{
+		int spb = roundToInt( 4.0f / clockDivQuarters[ div ] );
+		if ( spb > 0 )
+			return spb;
+	}
+	// Auto: nothing says how long a tick is, so fall back to the loop's own
+	// grid -- n slices spanning Bars bars, which is what this always assumed
 	int bars = pThis->v[ kParamBars ] + 1;
 	int spb = n / bars;
 	return ( spb > 0 ) ? spb : 1;
@@ -2124,7 +2147,11 @@ static void startBeefVoice( _breakSlicer* pThis, int role )
 	pThis->beefGate[ bi ] = ( v.framesLeft > minPulse ) ? v.framesLeft : minPulse;
 }
 
-static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos, float diceBoost = 1.0f )
+// maskPos is the Mask's read position. The clocked path passes barTick so the
+// pattern locks to the bar; everything else leaves it -1 and falls back to
+// gridPos, which is the slice's own position -- so a CV-addressed or MIDI slice
+// gets a consistent head, and a ratchet roll holds the one it started on.
+static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos, float diceBoost = 1.0f, int maskPos = -1 )
 {
 	const int16_t* pv = pThis->v;
 
@@ -2133,13 +2160,8 @@ static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos, float diceB
 
 	bool twoLoops = pv[ kParamLoops ] && pThis->loops[1].sliced;
 
-	// The Mask reads the rhythmic position rather than counting events. A
-	// free-running counter drifts: a ratchet, a ghost note or a random pulse
-	// is an extra event, so the pattern slips against the bar and turns into a
-	// polyrhythm. gridPos cycles with the loop on every trigger path, so
-	// indexing by it makes the same steps land on the same beats every bar,
-	// however many extra events happen in between.
-	uint32_t maskStep = (uint32_t)( gridPos < 0 ? 0 : gridPos );
+	int mp = ( maskPos >= 0 ) ? maskPos : gridPos;
+	uint32_t maskStep = (uint32_t)( mp < 0 ? 0 : mp );
 
 	if ( twoLoops && pv[ kParamBlendMode ] == kBlendXfade )
 	{
@@ -2426,6 +2448,9 @@ static void triggerStep( _breakSlicer* pThis )
 	if ( n < 1 )
 		n = 1;
 	applyPhraseReset( pThis, n );
+	// barTick advances on the tick even when a roll swallows the step, so the
+	// mask keeps its place in the bar through a ratchet rather than stalling
+	uint32_t tick = pThis->barTick++;
 	if ( pThis->ratchetRollFrames > 0.0f )
 	{
 		(void)nextStep( pThis );		// keep sequence position moving under the roll
@@ -2434,7 +2459,7 @@ static void triggerStep( _breakSlicer* pThis )
 		return;
 	}
 	int gridPos = pThis->stepPhase % n;
-	triggerSlice( pThis, nextStep( pThis ), gridPos, fillDiceBoost( pThis, n ) );
+	triggerSlice( pThis, nextStep( pThis ), gridPos, fillDiceBoost( pThis, n ), (int)( tick & 0x7FFFFFFFu ) );
 	scheduleGhost( pThis, n, gridPos );
 	maybeStartRatchetRoll( pThis );
 	pThis->stepPhase = ( pThis->stepPhase + 1 ) % n;
