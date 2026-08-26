@@ -727,8 +727,9 @@ struct _breakSlicer : public _NT_algorithm
 	// so raising Blend brings steps over to Goat in a repeatable order and
 	// Quarrel still wanders. Regenerating only on seed change keeps the
 	// pattern stable while you ride the fader.
+	// indexed by the event's rhythmic position, not by a counter, so extra
+	// events (ratchets, ghosts, random pulses) cannot slip the pattern
 	uint8_t			maskVal[ 32 ];	// 0..99 per step, longest supported length
-	uint32_t		maskPos;		// step counter, advanced per slice event
 	uint32_t		seedToast;		// frames left showing the seed after a re-roll
 
 	// ghost notes: quiet straight hits scheduled between sequenced steps
@@ -1722,7 +1723,6 @@ static void resetSequencer( _breakSlicer* pThis )
 	pThis->seqStep = 0;
 	pThis->stepPhase = 0;
 	pThis->phraseStep = 0;
-	pThis->maskPos = 0;		// Reset re-aligns the mask to the top of its pattern
 	pThis->roleRandomPhase = 0;
 	pThis->ppDir = 1;
 	pThis->shufflePos = 0;
@@ -2133,9 +2133,13 @@ static void triggerSlice( _breakSlicer* pThis, int idx, int gridPos, float diceB
 
 	bool twoLoops = pv[ kParamLoops ] && pThis->loops[1].sliced;
 
-	// the Mask step advances on every event, whichever path triggered it, so
-	// the pattern holds under CV and MIDI as well as the clock
-	uint32_t maskStep = pThis->maskPos++;
+	// The Mask reads the rhythmic position rather than counting events. A
+	// free-running counter drifts: a ratchet, a ghost note or a random pulse
+	// is an extra event, so the pattern slips against the bar and turns into a
+	// polyrhythm. gridPos cycles with the loop on every trigger path, so
+	// indexing by it makes the same steps land on the same beats every bar,
+	// however many extra events happen in between.
+	uint32_t maskStep = (uint32_t)( gridPos < 0 ? 0 : gridPos );
 
 	if ( twoLoops && pv[ kParamBlendMode ] == kBlendXfade )
 	{
