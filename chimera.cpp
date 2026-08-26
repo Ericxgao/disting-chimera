@@ -361,7 +361,7 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Filter", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Serpent", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Blend", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
-	{ .name = "Blend mode", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = blendModeStrings },
+	{ .name = "Blend mode", .min = 0, .max = 2, .def = kBlendMask, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = blendModeStrings },
 	{ .name = "Quarrel", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Break", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
