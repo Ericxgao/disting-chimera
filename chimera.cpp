@@ -18,12 +18,16 @@
  *   Reset in      -> stepping back to slice 1
  *   Ratchet in    -> gate held retrigs current slice at a clock subdivision
  *   MIDI notes from C1 (36) play slices directly
+ *   MIDI trig     -> a single configurable note/channel that steps the
+ *                    sequencer like a Trigger edge (Trig channel/Trig note)
  *   MIDI clock    -> tempo + transport-driven stepping
  *
  * Clock source (Sequence page) picks which clock, if any, advances the
- * sequence: Off (only explicit triggers play), CV (the Clock input) or
- * MIDI (incoming MIDI clock). Default CV, so the loop never runs off a
- * host's MIDI clock unless asked. Tempo for Sync is still measured.
+ * sequence: Off (only explicit triggers play), CV (the Clock input),
+ * MIDI (incoming MIDI clock) or MIDI tempo (tempo from MIDI clock, but
+ * nothing steps -- only explicit triggers play). Default CV, so the loop
+ * never runs off a host's MIDI clock unless asked. Tempo for Sync is
+ * still measured.
  *
  * Two-loop intermingle:
  *   Blend sets the probability that a slice event draws from loop B
@@ -46,6 +50,15 @@
  *   then conform to the measured clock (granular Stretch or Repitch).
  *   Tempo comes from the analog Clock input, or from MIDI clock when the
  *   Clock source is set to MIDI (24 PPQN).
+ *
+ * Players deck (performance view):
+ *   Button 4 flips the encoders off Lion/Goat onto two sample players
+ *   found in the preset by name ('Sample Player', and 'Sample Player
+ *   (Clocked)' or this repo's RAM-resident 'Chimera Looper'), so one page
+ *   performs the breaks and the players.
+ *   Same grammar both decks: turn browses by name without loading, quick
+ *   push loads (or rolls a random sample), and a ~3/4s hold flips the
+ *   encoder between Sample and Folder -- visibly, while still held.
  */
 
 #include <math.h>
@@ -54,6 +67,7 @@
 #include <distingnt/api.h>
 #include <distingnt/wav.h>
 #include <distingnt/serialisation.h>
+#include <distingnt/slot.h>
 
 // ---------------------------------------------------------------------------
 // constants
@@ -65,7 +79,12 @@ enum
 	kEchoFrames		= 48000,	// serpent delay line, 1s stereo
 	kWaveBuckets	= 128,		// waveform display resolution
 	kAnalysisHop	= 128,		// frames per onset-envelope hop
-	kAnalysisChunk	= 8192,		// frames analysed per step() call
+	// frames analysed per step() call. This was 8192, which read 64KB out of
+	// SDRAM per audio block on top of rendering -- a solid run of overruns for
+	// the whole analysis pass, heard as every OTHER algorithm stuttering for a
+	// beat after each load. 1024 fits the block budget; the pass takes a few
+	// hundred ms longer, which the 'analysing' tag already covers.
+	kAnalysisChunk	= 1024,
 	kMinSliceFrames	= 256,
 	kEnvRampFrames	= 32,		// declick attack
 	kReleaseFrames	= 48,		// declick release, in output frames
@@ -91,6 +110,32 @@ static const int kNumLoadSlots = kNumLoops + kNumBeefSlots;	// loops + beef one-
 
 // display initial per role ('\0' = untagged, nothing drawn)
 static const char kRoleInitials[ kNumRoles ] = { 0, 'K', 'S', 'P', 'H', 'C' };
+
+// ---------------------------------------------------------------------------
+// players deck
+//
+// In the performance view, button 4 flips both encoders off chimera's own
+// heads onto two firmware sample players elsewhere in the preset -- a one-shot
+// 'Sample Player' and a looping 'Sample Player (Clocked)' -- so one page
+// carries the breaks and the players live. Slots are found by their factory
+// names; a preset without them just shows the deck as inert. The grammar
+// matches the chimera deck: turning browses by name without loading, a quick
+// push commits the pending browse (or rolls a random sample when nothing is
+// pending), and holding the push swaps the encoder between the player's
+// Sample and its Folder.
+
+enum { kNumPlayers = 2 };
+enum { kTargetSample = 0, kTargetFolder = 1 };
+
+// alternates per deck slot: the LOOP slot takes either the factory clocked
+// player or this repo's RAM-resident stand-in (looper.cpp), whichever the
+// preset carries. First slot-order match wins.
+enum { kNumPlayerAlts = 2 };
+static const char* const kPlayerNames[ kNumPlayers ][ kNumPlayerAlts ] =
+	{ { "Sample Player", NULL }, { "Sample Player (Clocked)", "Chimera Looper" } };
+
+// short tags for the name lines while the deck is up
+static const char* const kPlayerTags[ kNumPlayers ] = { "SD", "LOOP" };
 
 // ---------------------------------------------------------------------------
 // (a*b)/c in 64-bit, without __aeabi_uldivmod (firmware doesn't export libgcc
@@ -121,6 +166,16 @@ static uint32_t muldivU32( uint32_t a, uint32_t b, uint32_t c )
 static inline int roundToInt( float x )
 {
 	return ( x >= 0.0f ) ? (int)( x + 0.5f ) : -(int)( -x + 0.5f );
+}
+
+// bounded append, returning the new length -- for lines assembled from
+// catalogue strings whose lengths this file does not control
+static int appendStr( char* buf, int n, const char* s, int cap )
+{
+	while ( *s && n < cap - 1 )
+		buf[ n++ ] = *s++;
+	buf[ n ] = 0;
+	return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +316,12 @@ enum
 	kParamMaskLength,
 	kParamMaskSeed,
 
+	// a MIDI trig: one note, on its own channel, that fires the sequencer the
+	// way a rising edge on the Trigger input does (the step mode decides what
+	// plays). Independent of the note->slice mapping and its MIDI channel.
+	kParamTrigChannel,
+	kParamTrigNote,
+
 	kNumParams,
 };
 
@@ -268,8 +329,17 @@ enum
 // points; Onsets lets the detector decide how many there are.
 enum { kSliceEqual, kSliceTransient, kSliceOnsets };
 
-// which clock, if any, advances the sequence (tempo for Sync is still measured)
-enum { kClockOff, kClockCV, kClockMidi };
+// which clock, if any, advances the sequence (tempo for Sync is still measured).
+// MIDI tempo listens without stepping: tempo for Sync/ratchet/serpent comes
+// from MIDI clock, but nothing plays until trigged (CV, MIDI note, or the
+// Trig note) -- for a rig whose sequencer sends clock all the time.
+enum { kClockOff, kClockCV, kClockMidi, kClockMidiTempo };
+
+// does the chosen source take its tempo from MIDI clock?
+static inline bool clockUsesMidiTempo( int src )
+{
+	return src == kClockMidi || src == kClockMidiTempo;
+}
 
 static const char* const loopsStrings[] = { "1", "2" };
 static const char* const blendModeStrings[] = { "Chance", "Xfade", "Mask" };
@@ -283,7 +353,7 @@ static const char* const sliceModeStrings[] = { "Equal", "Transient", "Onsets" }
 static const char* const barsStrings[] = { "1", "2" };
 static const char* const stutterDivStrings[] = { "1/2", "1/4", "1/8", "1/16", "Random" };
 static const char* const syncModeStrings[] = { "Off", "Stretch", "Repitch" };
-static const char* const clockSourceStrings[] = { "Off", "CV", "MIDI" };
+static const char* const clockSourceStrings[] = { "Off", "CV", "MIDI", "MIDI tempo" };
 static const char* const holdModeStrings[] = { "Tame", "Wild" };
 static const char* const fillModeStrings[] = { "Off", "Last 1/8", "Last 1/4", "Last 1/2" };
 static const char* const phraseResetStrings[] = { "Off", "1 bar", "2 bars", "4 bars", "8 bars" };
@@ -320,9 +390,15 @@ static const uint8_t patternTable[ kNumPatterns ][ 16 ] = {
 };
 static const char* const ratchetDivStrings[] = { "1/1", "1/2", "1/3", "1/4", "1/8" };
 static const float ratchetDivValues[] = { 1.0f, 2.0f, 3.0f, 4.0f, 8.0f };
+// 'Off' sits after 16, appended rather than reordered so presets saved when 0
+// (Omni) was the first value keep their meaning. Off on 'MIDI channel' mutes
+// the note->slice mapping -- wanted when a controller shares the trig's
+// channel, where Omni would fire a slice for every note >= C1 and make the
+// trig look as if it ignored its note filter.
+enum { kMidiChannelOff = 17 };
 static const char* const midiChannelStrings[] = {
 	"Omni", "1", "2", "3", "4", "5", "6", "7", "8",
-	"9", "10", "11", "12", "13", "14", "15", "16" };
+	"9", "10", "11", "12", "13", "14", "15", "16", "Off" };
 
 static const _NT_parameter parameters[] = {
 	NT_PARAMETER_AUDIO_OUTPUT_WITH_MODE( "Output L", 1, 13 )
@@ -350,7 +426,7 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Step mode", .min = 0, .max = 5, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = stepModeStrings },
 	{ .name = "Random mode", .min = 0, .max = 2, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = randomModeStrings },
 	{ .name = "Ratchet div", .min = 0, .max = 4, .def = 3, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = ratchetDivStrings },
-	{ .name = "MIDI channel", .min = 0, .max = 16, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = midiChannelStrings },
+	{ .name = "MIDI channel", .min = 0, .max = kMidiChannelOff, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = midiChannelStrings },
 
 	{ .name = "Reverse", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Pitch up", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
@@ -408,7 +484,7 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Crash level", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Crash duck", .min = 0, .max = 100, .def = 0, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 
-	{ .name = "Clock source", .min = 0, .max = 2, .def = kClockCV, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = clockSourceStrings },
+	{ .name = "Clock source", .min = 0, .max = kClockMidiTempo, .def = kClockCV, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = clockSourceStrings },
 
 	{ .name = "Hold mode", .min = 0, .max = 1, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = holdModeStrings },
 
@@ -426,13 +502,18 @@ static const _NT_parameter parameters[] = {
 	{ .name = "Sensitivity", .min = 0, .max = 100, .def = 50, .unit = kNT_unitPercent, .scaling = 0, .enumStrings = NULL },
 	{ .name = "Mask length", .min = 0, .max = 3, .def = 2, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = maskLenStrings },
 	{ .name = "Mask seed", .min = 0, .max = 255, .def = 0, .unit = kNT_unitNone, .scaling = 0, .enumStrings = NULL },
+
+	{ .name = "Trig channel", .min = 0, .max = kMidiChannelOff, .def = 0, .unit = kNT_unitEnum, .scaling = 0, .enumStrings = midiChannelStrings },
+	// -1 = Off. kNT_unitHasStrings rather than kNT_unitMIDINote so
+	// parameterString can render the Off state; it names the notes itself.
+	{ .name = "Trig note", .min = -1, .max = 127, .def = -1, .unit = kNT_unitHasStrings, .scaling = 0, .enumStrings = NULL },
 };
 
 static const uint8_t pageSample[] = { kParamLoops, kParamSlices, kParamSliceMode, kParamSensitivity, kParamBars };
 static const uint8_t pageLion[] = { kParamFolder, kParamSample, kParamLionLevel, kParamLionRate, kParamLionPitch, kParamLionFilter };
 static const uint8_t pageGoat[] = { kParamFolderB, kParamSampleB, kParamGoatLevel, kParamGoatRate, kParamGoatPitch, kParamGoatFilter };
 static const uint8_t pageTriggers[] = { kParamSelectInput, kParamSelectMode, kParamSelectOffset, kParamTrigInput, kParamRandomInput, kParamClockInput, kParamResetInput, kParamRatchetInput };
-static const uint8_t pageSeq[] = { kParamClockSource, kParamSync, kParamClockDiv, kParamStepMode, kParamPattern, kParamPhraseReset, kParamFillMode, kParamGhostNote, kParamRandomMode, kParamRatchetDiv, kParamRatchetRoll, kParamMidiChannel };
+static const uint8_t pageSeq[] = { kParamClockSource, kParamSync, kParamClockDiv, kParamStepMode, kParamPattern, kParamPhraseReset, kParamFillMode, kParamGhostNote, kParamRandomMode, kParamRatchetDiv, kParamRatchetRoll, kParamMidiChannel, kParamTrigChannel, kParamTrigNote };
 static const uint8_t pageFx[] = { kParamReverse, kParamPitchUp, kParamPitchDown, kParamStutter, kParamStretch, kParamGate, kParamFilter, kParamSerpent, kParamBlend, kParamBlendMode, kParamMaskLength, kParamMaskSeed, kParamQuarrel, kParamBreak, kParamBackbeat, kParamHoldMode };
 static const uint8_t pageFxSetup[] = { kParamPitchAmount, kParamStutterDiv, kParamStretchAmount, kParamCrush, kParamDrive, kParamLpg, kParamLpgDecay, kParamLpgRes };
 static const uint8_t pageRouting[] = { kParamOutputL, kParamOutputR, kParamOutputMode, kParamLevel,
@@ -694,6 +775,12 @@ struct _breakSlicer : public _NT_algorithm
 	uint32_t		midiStepTicks;		// ticks toward the next sequence step
 	bool			midiRunning;		// transport state (Start/Continue vs Stop)
 
+	// button 3, decided like the encoder pushes: quick = re-roll the Mask
+	// seed, hold = the slice editor (kept reachable, but off the quick press)
+	bool			b3Held;			// push down, release still to come
+	bool			b3Consumed;		// the hold already acted; release does nothing
+	uint32_t		b3PressFrame;	// frameClock at the push
+
 	// slice editor
 	bool			editMode;
 	int				editLoop;
@@ -706,6 +793,27 @@ struct _breakSlicer : public _NT_algorithm
 	// the display is showing the loaded sample. Browsing must not load on
 	// every detent -- a read is seconds long, and each one restarts playback.
 	int16_t			browseSample[ kNumLoops ];
+	// the heads' folders browse pending too, so each chimera-deck encoder can
+	// hold-swap between Sample and Folder exactly like the players deck
+	int16_t			browseFolder[ kNumLoops ];		// pending folder browse, -1 = none
+	uint8_t			headTarget[ kNumLoops ];		// per head: kTargetSample/Folder
+
+	// players deck (see kPlayerNames): button 4 flips the perf-view encoders
+	// from the heads onto the external sample players. UI thread only, like
+	// the editor state.
+	uint8_t			perfDeck;						// 0 = chimera heads, 1 = players
+	uint8_t			playerTarget[ kNumPlayers ];	// per player: kTargetSample/Folder
+	int16_t			playerBrowse[ kNumPlayers ][ 2 ];	// pending browse per target, -1 = none
+	// encoder push, both decks: quick = commit/random, hold = swap
+	// sample/folder. The swap fires at the threshold, under the finger, so
+	// the line flips visibly while the button is still down; the release
+	// after an acted hold (or after a turn) then does nothing.
+	bool			encHeld[ kNumPlayers ];			// push down, release still to come
+	bool			encTurned[ kNumPlayers ];		// turned during the hold: do nothing
+	bool			encActed[ kNumPlayers ];		// the hold already swapped the target
+	uint32_t		encPushFrame[ kNumPlayers ];	// frameClock at the push
+	uint32_t		deckToast;						// frames left naming the deck after a flip
+	uint32_t		blendToast;						// frames left showing Blend after a pot move
 
 	// cached parameter values
 	float			gain, gainTarget;
@@ -734,6 +842,10 @@ struct _breakSlicer : public _NT_algorithm
 	// is its own length rather than the slice count -- the lengths are powers
 	// of two, so even the uint32 wrap lands cleanly on a pattern boundary.
 	uint32_t		barTick;
+	// MIDI tempo mode: ticks since the last phrase reset. The phrase is
+	// stated in bars, so it is counted in raw ticks (96 to a 4/4 bar) rather
+	// than in steps, which need not divide the bar evenly.
+	uint32_t		phraseTicks;
 	uint32_t		seedToast;		// frames left showing the seed after a re-roll
 
 	// ghost notes: quiet straight hits scheduled between sequenced steps
@@ -1154,7 +1266,10 @@ _NT_algorithm*	construct( const _NT_algorithmMemoryPtrs& ptrs, const _NT_algorit
 		alg->loopSpeed[li] = 1.0f;
 		alg->loopTune[li] = 1.0f;
 		alg->browseSample[li] = -1;		// zeroed memset would read as "browsing file 0"
+		alg->browseFolder[li] = -1;
 	}
+	for ( int pi=0; pi<kNumPlayers; ++pi )
+		alg->playerBrowse[pi][0] = alg->playerBrowse[pi][1] = -1;	// same reasoning
 	alg->trigArmed = alg->randArmed = alg->clockArmed = alg->resetArmed = true;
 	alg->ppDir = 1;
 	alg->rng.seed( 0xBEA7BEA7u );
@@ -1252,6 +1367,7 @@ static void startLoadOneShot( _breakSlicer* pThis, int slot )
 
 	pThis->request.folder = pThis->v[ kParamBeefFolder ];
 	pThis->request.sample = sampleIdx;
+	pThis->request.startOffset = 0;
 	pThis->request.numFrames = os.numFrames;
 	pThis->request.dst = os.sample;
 
@@ -1329,6 +1445,7 @@ static void startLoad( _breakSlicer* pThis, int slot )
 
 	pThis->request.folder = pThis->v[ loopFolderParam[li] ];
 	pThis->request.sample = pThis->v[ loopSampleParam[li] ];
+	pThis->request.startOffset = 0;
 	pThis->request.numFrames = frames;
 	pThis->request.dst = seamless ? pThis->spare : L.sample;
 
@@ -1380,6 +1497,28 @@ int 	parameterString( _NT_algorithm* self, int p, int v, char* buff )
 
 	switch ( p )
 	{
+	case kParamTrigNote:
+	{
+		if ( v < 0 )
+		{
+			strncpy( buff, "Off", kNT_parameterStringSize-1 );
+			len = 3;
+			break;
+		}
+		// named as note (number): C1 = 36, matching the note->slice mapping's
+		// documented base. The raw number stays because octave conventions
+		// differ between controllers and nobody should have to guess.
+		static const char* const kNoteNames[12] =
+			{ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+		len = appendStr( buff, 0, kNoteNames[ v % 12 ], kNT_parameterStringSize );
+		len += NT_intToString( buff + len, v / 12 - 2 );
+		buff[len++] = ' ';
+		buff[len++] = '(';
+		len += NT_intToString( buff + len, v );
+		buff[len++] = ')';
+		buff[len] = 0;
+	}
+		break;
 	case kParamFolder:
 	case kParamFolderB:
 	{
@@ -1483,7 +1622,10 @@ static void updateGrayedOut( _breakSlicer* pThis )
 	// look active while doing nothing.
 	bool stepped = ( pThis->v[ kParamTrigInput ] && !pThis->v[ kParamSelectInput ] )
 		|| ( pThis->v[ kParamClockInput ] && pThis->v[ kParamClockSource ] == kClockCV )
-		|| ( pThis->v[ kParamClockSource ] == kClockMidi );
+		|| ( pThis->v[ kParamClockSource ] == kClockMidi )
+		// the MIDI trig note steps too (its channel can be Off, which disarms it)
+		|| ( pThis->v[ kParamTrigNote ] >= 0
+			&& pThis->v[ kParamTrigChannel ] != kMidiChannelOff );
 	NT_setParameterGrayedOut( algIdx, kParamPhraseReset + off, !stepped );
 	NT_setParameterGrayedOut( algIdx, kParamFillMode + off, !stepped );
 	NT_setParameterGrayedOut( algIdx, kParamGhostNote + off, !stepped );
@@ -1568,6 +1710,8 @@ void	parameterChanged( _NT_algorithm* self, int p )
 	case kParamSelectInput:
 	case kParamTrigInput:
 	case kParamClockInput:
+	case kParamTrigChannel:
+	case kParamTrigNote:
 		updateGrayedOut( pThis );
 		break;
 	case kParamClockSource:
@@ -1588,6 +1732,7 @@ void	parameterChanged( _NT_algorithm* self, int p )
 		// folder change alone never fires the sample param, so kick the
 		// load of the (now re-clamped) current index here
 		pThis->browseSample[li] = -1;	// indices mean a different folder now
+		pThis->browseFolder[li] = -1;	// and any pending folder browse is stale
 		if ( li == 0 || pThis->v[ kParamLoops ] )
 			requestLoad( pThis, li );
 	}
@@ -1728,6 +1873,7 @@ static void resetSequencer( _breakSlicer* pThis )
 	pThis->stepPhase = 0;
 	pThis->phraseStep = 0;
 	pThis->barTick = 0;		// Reset puts the mask back to the top of its pattern
+	pThis->phraseTicks = 0;	// and re-anchors the MIDI-tempo phrase clock
 	pThis->roleRandomPhase = 0;
 	pThis->ppDir = 1;
 	pThis->shufflePos = 0;
@@ -1761,6 +1907,18 @@ static int stepsPerBar( _breakSlicer* pThis, int n )
 	int bars = pThis->v[ kParamBars ] + 1;
 	int spb = n / bars;
 	return ( spb > 0 ) ? spb : 1;
+}
+
+// one sequencer step in MIDI clock ticks, derived from stepsPerBar (96 ticks
+// to a 4/4 bar) so both MIDI modes agree with the phrase arithmetic above.
+// Deriving it from the Clock div alone -- as this did -- made Auto silently
+// mean quarter notes while stepsPerBar meant the loop's own grid, and the
+// phrase then reset after the wrong number of beats.
+static int ticksPerStepMidi( _breakSlicer* pThis, int n )
+{
+	int spb = stepsPerBar( pThis, n );
+	int t = ( 96 + spb / 2 ) / spb;
+	return ( t < 1 ) ? 1 : t;
 }
 
 static int phraseLengthSteps( _breakSlicer* pThis, int n, bool resetLength )
@@ -2447,15 +2605,26 @@ static void triggerStep( _breakSlicer* pThis )
 	int n = canonicalSlices( pThis );
 	if ( n < 1 )
 		n = 1;
-	applyPhraseReset( pThis, n );
+
+	// In MIDI tempo mode the transport owns the rhythmic position: the tick
+	// handler in midiRealtime advances barTick/phraseStep in wall time and
+	// applies the phrase reset exactly on its bar boundary, however many trigs
+	// were played. A trig then only advances the sequence and plays it at
+	// wherever the bar currently is -- counting trigs here instead would slip
+	// the Mask, Backbeat and phrase against the clock everything else follows.
+	bool timeOwned = ( pThis->v[ kParamClockSource ] == kClockMidiTempo );
+
+	if ( !timeOwned )
+		applyPhraseReset( pThis, n );
 	// barTick advances on the tick even when a roll swallows the step, so the
 	// mask keeps its place in the bar through a ratchet rather than stalling
-	uint32_t tick = pThis->barTick++;
+	uint32_t tick = timeOwned ? pThis->barTick : pThis->barTick++;
 	if ( pThis->ratchetRollFrames > 0.0f )
 	{
 		(void)nextStep( pThis );		// keep sequence position moving under the roll
 		pThis->stepPhase = ( pThis->stepPhase + 1 ) % n;
-		++pThis->phraseStep;
+		if ( !timeOwned )
+			++pThis->phraseStep;
 		return;
 	}
 	int gridPos = pThis->stepPhase % n;
@@ -2463,7 +2632,8 @@ static void triggerStep( _breakSlicer* pThis )
 	scheduleGhost( pThis, n, gridPos );
 	maybeStartRatchetRoll( pThis );
 	pThis->stepPhase = ( pThis->stepPhase + 1 ) % n;
-	++pThis->phraseStep;
+	if ( !timeOwned )
+		++pThis->phraseStep;
 }
 
 // ---------------------------------------------------------------------------
@@ -2475,7 +2645,30 @@ void	midiMessage( _NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byt
 
 	if ( ( byte0 & 0xF0 ) != 0x90 || byte2 == 0 )
 		return;
+
+	// the trig note: fires the sequencer exactly like a rising edge on the
+	// Trigger input with no Select CV -- the step mode decides what plays.
+	// Its own channel filter, so a drum machine can trig on one channel while
+	// a keyboard plays slices on another; a match consumes the note, so the
+	// trig never also fires the slice the note->slice mapping would pick.
+	int trigNote = pThis->v[ kParamTrigNote ];
+	if ( trigNote >= 0 && (int)byte1 == trigNote )
+	{
+		int tch = pThis->v[ kParamTrigChannel ];
+		if ( tch != kMidiChannelOff
+			&& ( !tch || ( byte0 & 0x0F ) == tch - 1 ) )
+		{
+			triggerStep( pThis );
+			return;
+		}
+	}
+
+	// the note->slice mapping. Off exists for the preset where a controller
+	// shares the trig's channel: on Omni, every note >= C1 lands here and
+	// plays a slice, which is easy to hear as the trig ignoring its filter.
 	int chParam = pThis->v[ kParamMidiChannel ];
+	if ( chParam == kMidiChannelOff )
+		return;
 	if ( chParam && ( byte0 & 0x0F ) != chParam - 1 )
 		return;
 
@@ -2487,12 +2680,17 @@ void	midiMessage( _NT_algorithm* self, uint8_t byte0, uint8_t byte1, uint8_t byt
 // MIDI clock (24 PPQN): drives tempo for Sync/ratchet/serpent and, while the
 // transport is running, steps the sequence -- but only when Clock source is
 // MIDI, so the loop never plays off a host's clock unless the user asks for it.
+// MIDI tempo takes the tempo measurement and the transport alignment but never
+// steps: for a rig whose sequencer sends clock continuously, where full MIDI
+// keeps the loop running with nothing played -- there, only explicit triggers
+// (CV, MIDI notes, the Trig note) make sound.
 // Realtime bytes are channelless, so the MIDI channel param does not apply here.
 void	midiRealtime( _NT_algorithm* self, uint8_t byte )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
 
-	if ( pThis->v[ kParamClockSource ] != kClockMidi )		// MIDI clock not selected
+	int src = pThis->v[ kParamClockSource ];
+	if ( !clockUsesMidiTempo( src ) )		// MIDI clock not selected
 		return;
 
 	switch ( byte )
@@ -2522,21 +2720,55 @@ void	midiRealtime( _NT_algorithm* self, uint8_t byte )
 		}
 
 		// stepping: fire on the first tick after Start (the downbeat), then
-		// every N ticks derived from the Clock div
-		if ( pThis->midiRunning )
+		// every N ticks derived from the Clock div. Only the full MIDI source
+		// steps; MIDI tempo listens.
+		if ( src == kClockMidi && pThis->midiRunning )
 		{
-			int div = pThis->v[ kParamClockDiv ];
-			int ticksPerStep = roundToInt( clockDivQuarters[ div ] * 24.0f );
-			if ( ticksPerStep < 1 )
-				ticksPerStep = 1;
+			int n = canonicalSlices( pThis );
+			int ticksPerStep = ticksPerStepMidi( pThis, n < 1 ? 1 : n );
 			if ( pThis->midiStepTicks == 0 )
 				triggerStep( pThis );
 			if ( ++pThis->midiStepTicks >= (uint32_t)ticksPerStep )
 				pThis->midiStepTicks = 0;
 		}
+		else if ( src == kClockMidiTempo && pThis->midiRunning )
+		{
+			// MIDI tempo: the clock does not step, but it does keep the
+			// rhythmic position -- barTick (Mask, Backbeat) and phraseStep
+			// (Fill, Ghost) advance per step of wall time. The wrap runs a
+			// tick early on purpose: a trig on the downbeat must see the new
+			// position, and its note byte can arrive before that tick.
+			int n = canonicalSlices( pThis );
+			if ( n < 1 )
+				n = 1;
+			int ticksPerStep = ticksPerStepMidi( pThis, n );
+			if ( ++pThis->midiStepTicks >= (uint32_t)ticksPerStep )
+			{
+				pThis->midiStepTicks = 0;
+				++pThis->barTick;
+				++pThis->phraseStep;
+			}
+
+			// the phrase reset is stated in bars, so it is counted in raw
+			// ticks rather than steps, which need not divide the bar evenly
+			// (Onsets can slice a break into 27). Exactly on time however
+			// many trigs were played, which is the point of it in a mode
+			// where only trigs make sound.
+			int bars = phraseResetBarsValues[ pThis->v[ kParamPhraseReset ] ];
+			if ( bars <= 0 )
+				pThis->phraseTicks = 0;
+			else if ( ++pThis->phraseTicks >= (uint32_t)( 96 * bars ) )
+			{
+				resetSequencer( pThis );	// zeroes phraseTicks too
+				pThis->midiStepTicks = 0;	// a fresh phrase starts a fresh step
+			}
+		}
 	}
 		break;
-	case 0xFA:		// start: pull the sequence back to the top (like Reset)
+	case 0xFA:		// start: pull the sequence back to the top (like Reset).
+					// Also in MIDI tempo mode -- it makes no sound by itself,
+					// and it aligns the phrase and the Mask's bar position to
+					// the transport that the manual trigs will play against.
 		resetSequencer( pThis );
 		pThis->midiStepTicks = 0;
 		pThis->midiTickCount = 0;
@@ -2844,6 +3076,12 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 	if ( pThis->seedToast )
 		pThis->seedToast = ( pThis->seedToast > (uint32_t)numFrames )
 			? pThis->seedToast - numFrames : 0;
+	if ( pThis->deckToast )
+		pThis->deckToast = ( pThis->deckToast > (uint32_t)numFrames )
+			? pThis->deckToast - numFrames : 0;
+	if ( pThis->blendToast )
+		pThis->blendToast = ( pThis->blendToast > (uint32_t)numFrames )
+			? pThis->blendToast - numFrames : 0;
 
 	float* outL = busFrames + ( pv[ kParamOutputL ] - 1 ) * numFrames;
 	float* outR = busFrames + ( pv[ kParamOutputR ] - 1 ) * numFrames;
@@ -2939,10 +3177,10 @@ void 	step( _NT_algorithm* self, float* busFrames, int numFramesBy4 )
 		if ( clockBus && risingEdge( clockBus[i], pThis->clockArmed ) )
 		{
 			// measure clock period for Sync (sane range 50ms - 4s). CV provides
-			// the tempo unless MIDI is the chosen clock source.
+			// the tempo unless a MIDI source owns it.
 			uint32_t elapsed = pThis->framesSinceClock;
 			pThis->framesSinceClock = 0;
-			if ( pv[ kParamClockSource ] != kClockMidi
+			if ( !clockUsesMidiTempo( pv[ kParamClockSource ] )
 				&& elapsed >= NT_globals.sampleRate / 20 && elapsed <= NT_globals.sampleRate * 4 )
 				pThis->clockPeriod = (float)elapsed;
 
@@ -3238,24 +3476,6 @@ static int shownSample( _breakSlicer* pThis, int li )
 		? pThis->browseSample[li] : pThis->v[ loopSampleParam[li] ];
 }
 
-// scroll one head's browse position, clamped to the file count of its folder.
-// Nothing is loaded here -- see browseSample.
-static void browseSampleParam( _breakSlicer* pThis, int li, int delta )
-{
-	int p = loopSampleParam[ li ];
-	int lo = pThis->params[ p ].min;
-	int hi = pThis->params[ p ].max;	// tracks the folder's file count
-	if ( hi <= lo )
-		return;
-
-	int v = shownSample( pThis, li ) + delta;
-	if ( v < lo ) v = lo;
-	if ( v > hi ) v = hi;
-
-	// back on the loaded one is not pending, so the marker clears
-	pThis->browseSample[li] = ( v == pThis->v[ p ] ) ? -1 : (int16_t)v;
-}
-
 // load a sample index for a head. Writing through the UI path lets the host
 // track the change, and parameterChanged() fires the load
 static void loadSampleParam( _breakSlicer* pThis, int li, int v )
@@ -3317,14 +3537,362 @@ static void rollMaskSeed( _breakSlicer* pThis )
 	pThis->seedToast = (uint32_t)NT_globals.sampleRate;	// ~1s of confirmation
 }
 
-// the encoder push: commit a pending browse, or -- when nothing is pending --
-// roll a random sample from the folder. Pushing repeatedly re-rolls.
+// one encoder detent on a head: move the pending browse of the active target
+// (sample or folder), loading nothing -- a head's load is seconds long and
+// restarts playback, which is the whole reason browsing is pending.
+static void browseHead( _breakSlicer* pThis, int li, int delta )
+{
+	if ( li == 1 && !pThis->v[ kParamLoops ] )
+		return;
+
+	if ( pThis->headTarget[ li ] == kTargetFolder )
+	{
+		int p = loopFolderParam[ li ];
+		int lo = pThis->params[ p ].min;
+		int hi = pThis->params[ p ].max;	// tracks the card's folder count
+		int shown = ( pThis->browseFolder[li] >= 0 )
+			? pThis->browseFolder[li] : pThis->v[ p ];
+		int v = shown + delta;
+		if ( v < lo ) v = lo;
+		if ( v > hi ) v = hi;
+		pThis->browseFolder[li] = ( v == pThis->v[ p ] ) ? -1 : (int16_t)v;
+		return;
+	}
+
+	int p = loopSampleParam[ li ];
+	int lo = pThis->params[ p ].min;
+	int hi = pThis->params[ p ].max;	// tracks the *loaded* folder's count
+	// browsing against a pending folder: the declared max is still the old
+	// folder's, so take the count off the catalogue instead
+	if ( pThis->browseFolder[li] >= 0 )
+	{
+		_NT_wavFolderInfo fi = { NULL, 0 };
+		NT_getSampleFolderInfo( (uint32_t)pThis->browseFolder[li], fi );
+		hi = ( fi.name && fi.numSampleFiles )
+			? lo + (int)fi.numSampleFiles - 1 : lo;
+	}
+
+	int v = shownSample( pThis, li ) + delta;
+	if ( v < lo ) v = lo;
+	if ( v > hi ) v = hi;
+
+	// back on the loaded value is not pending -- unless a pending folder means
+	// the same sample index now names a different folder's file
+	bool clean = ( v == pThis->v[ p ] ) && pThis->browseFolder[li] < 0;
+	pThis->browseSample[li] = clean ? -1 : (int16_t)v;
+}
+
+// the encoder push: commit whatever is pending -- folder first, so the sample
+// index is applied against the folder it was browsed in -- or, when nothing
+// is pending, roll a random sample from the folder. Pushing repeatedly
+// re-rolls.
 static void pushSampleEncoder( _breakSlicer* pThis, int li )
 {
-	if ( pThis->browseSample[li] >= 0 )
-		loadSampleParam( pThis, li, pThis->browseSample[li] );
-	else
+	// snapshot and clear before writing: the folder write fires our own
+	// parameterChanged, which clears these markers -- reading them afterwards
+	// would lose the pending sample
+	int pendF = pThis->browseFolder[ li ];
+	int pendS = pThis->browseSample[ li ];
+	pThis->browseFolder[ li ] = -1;
+	pThis->browseSample[ li ] = -1;
+
+	if ( pendF < 0 && pendS < 0 )
+	{
 		randomSampleParam( pThis, li );
+		return;
+	}
+
+	int algIdx = NT_algorithmIndex( pThis );
+	if ( algIdx < 0 )
+		return;
+
+	if ( pendF >= 0 )
+		NT_setParameterFromUi( algIdx, loopFolderParam[li] + NT_parameterOffset(), (int16_t)pendF );
+	if ( pendS >= 0 )
+		NT_setParameterFromUi( algIdx, loopSampleParam[li] + NT_parameterOffset(), (int16_t)pendS );
+}
+
+// ---------------------------------------------------------------------------
+// players deck: finding and driving the external sample players
+
+// a player slot resolved for one use: which algorithm, and where its first
+// Sample/Folder parameter pair sits (the first pair is voice 1 on the
+// multi-voice player). Values are read at resolve time, so a ref is only
+// as fresh as the call that filled it -- which is fine, because one is
+// resolved per gesture or per draw and never kept.
+struct PlayerRef
+{
+	int				slot;			// algorithm index in the preset
+	uint16_t		param[ 2 ];		// slot-local indices: [kTargetSample], [kTargetFolder]
+	_NT_parameter	info[ 2 ];
+	int16_t			value[ 2 ];
+};
+
+// exact name match, ignoring trailing padding. Exact, so 'Sample Player'
+// cannot claim 'Sample Player (Clocked)'; a renamed instance stops matching,
+// which -- as with the fader strip -- is how one is taken out of the deck.
+// Compared by hand: the firmware does not export strncmp to plug-ins.
+static bool nameMatches( const char* name, const char* wanted )
+{
+	if ( !name )
+		return false;
+	for ( ; *wanted; ++name, ++wanted )
+		if ( *name != *wanted )
+			return false;
+	for ( ; *name; ++name )
+		if ( *name != ' ' )
+			return false;
+	return true;
+}
+
+// find a player in the preset by its factory name. Resolved fresh on every
+// use rather than cached: the scan is a handful of strcmps at UI rate, and a
+// cache would go stale the moment the preset is edited under it.
+static bool resolvePlayer( int which, PlayerRef& out )
+{
+	static const char* const wanted[ 2 ] = { "Sample", "Folder" };
+
+	int count = (int)NT_algorithmCount();
+	for ( int i=0; i<count; ++i )
+	{
+		_NT_slot slot;
+		if ( !NT_getSlot( slot, (uint32_t)i ) )
+			break;
+		bool matched = false;
+		for ( int a=0; a<kNumPlayerAlts && !matched; ++a )
+			matched = kPlayerNames[ which ][ a ]
+				&& nameMatches( slot.name(), kPlayerNames[ which ][ a ] );
+		if ( !matched )
+			continue;
+
+		bool have[ 2 ] = { false, false };
+		uint32_t np = slot.numParameters();
+		for ( uint32_t p=0; p<np && !( have[0] && have[1] ); ++p )
+		{
+			_NT_parameter info;
+			if ( !slot.parameterInfo( info, p ) || !info.name )
+				continue;
+			for ( int t=0; t<2; ++t )
+			{
+				if ( !have[t] && nameMatches( info.name, wanted[t] ) )
+				{
+					out.param[t] = (uint16_t)p;
+					out.info[t] = info;
+					out.value[t] = slot.parameterValue( p );
+					have[t] = true;
+				}
+			}
+		}
+
+		if ( have[0] && have[1] )
+		{
+			out.slot = i;
+			return true;
+		}
+	}
+	return false;
+}
+
+// the value the deck is showing for one target: the pending browse if there
+// is one, otherwise what the player holds
+static int shownPlayerValue( _breakSlicer* pThis, const PlayerRef& ref, int pi, int t )
+{
+	int pend = pThis->playerBrowse[ pi ][ t ];
+	return ( pend >= 0 ) ? pend : ref.value[ t ];
+}
+
+// a player parameter value as an index into the SD catalogue that
+// NT_getSampleFolderInfo/NT_getSampleFileInfo read. The parameter's declared
+// minimum is taken to sit on the catalogue's first entry -- true of the
+// clocked player's 0-based Sample and of every Folder observed; stated here
+// rather than known for other firmware builds, and every use below survives
+// a miss (an unresolvable name falls back to the raw index).
+static int playerCatalogue( const PlayerRef& ref, int t, int value )
+{
+	return value - ref.info[ t ].min;
+}
+
+// the Sample range the encoder may browse: the declared range, trimmed to the
+// real file count of the folder the deck is showing. The count comes off the
+// catalogue directly -- the write-past-the-end probe the fader strip's script
+// needed does not apply here, because C++ can simply ask.
+static void playerSampleBounds( _breakSlicer* pThis, const PlayerRef& ref, int pi, int& lo, int& hi )
+{
+	lo = ref.info[ kTargetSample ].min;
+	hi = ref.info[ kTargetSample ].max;
+
+	int folderCat = playerCatalogue( ref, kTargetFolder,
+		shownPlayerValue( pThis, ref, pi, kTargetFolder ) );
+	if ( folderCat < 0 )
+		return;
+
+	_NT_wavFolderInfo fi = { NULL, 0 };
+	NT_getSampleFolderInfo( (uint32_t)folderCat, fi );
+	if ( fi.name && fi.numSampleFiles )
+	{
+		int last = lo + (int)fi.numSampleFiles - 1;
+		if ( last < hi )
+			hi = last;
+	}
+}
+
+// one encoder detent on a player: move the pending browse of the active
+// target. Nothing loads here -- same rule as browseHead, because a
+// player's load also restarts its playback.
+static void browsePlayer( _breakSlicer* pThis, int pi, int delta )
+{
+	PlayerRef ref;
+	if ( !resolvePlayer( pi, ref ) )
+		return;
+
+	int t = pThis->playerTarget[ pi ];
+	int lo, hi;
+	if ( t == kTargetSample )
+		playerSampleBounds( pThis, ref, pi, lo, hi );
+	else
+	{
+		lo = ref.info[ t ].min;
+		hi = ref.info[ t ].max;
+	}
+	if ( hi <= lo && t == kTargetFolder )
+		return;
+
+	int v = shownPlayerValue( pThis, ref, pi, t ) + delta;
+	if ( v < lo ) v = lo;
+	if ( v > hi ) v = hi;
+
+	// back on the loaded value is not pending -- unless a pending folder means
+	// the same sample index now names a different folder's file
+	bool clean = ( v == ref.value[ t ] )
+		&& !( t == kTargetSample && pThis->playerBrowse[ pi ][ kTargetFolder ] >= 0 );
+	pThis->playerBrowse[ pi ][ t ] = clean ? -1 : (int16_t)v;
+}
+
+// quick push on a player: load what the line is showing, or -- with nothing
+// pending -- roll a random sample from the current folder. Never the one
+// already loaded, for the same reason as randomSampleParam: a dedupe upstream
+// would make it read as a dead button.
+static void pushPlayerEncoder( _breakSlicer* pThis, int pi )
+{
+	PlayerRef ref;
+	if ( !resolvePlayer( pi, ref ) )
+		return;
+
+	int16_t& pendF = pThis->playerBrowse[ pi ][ kTargetFolder ];
+	int16_t& pendS = pThis->playerBrowse[ pi ][ kTargetSample ];
+
+	if ( pendF >= 0 || pendS >= 0 )
+	{
+		// folder first: the firmware clamps Sample against the new folder, and
+		// the pending sample (if any) was browsed against that folder's listing.
+		// No NT_parameterOffset() here: _NT_slot's parameter indices are already
+		// global (index 0 reads back as 'Bypass') -- the offset applies only to
+		// a plug-in's *own* parameter enum. Adding it wrote the parameter after
+		// the one intended, which read as loads silently doing nothing.
+		if ( pendF >= 0 )
+			NT_setParameterFromUi( (uint32_t)ref.slot,
+				ref.param[ kTargetFolder ], pendF );
+		if ( pendS >= 0 )
+			NT_setParameterFromUi( (uint32_t)ref.slot,
+				ref.param[ kTargetSample ], pendS );
+		pendF = pendS = -1;
+		return;
+	}
+
+	int lo, hi;
+	playerSampleBounds( pThis, ref, pi, lo, hi );
+	int span = hi - lo;
+	if ( span < 1 )
+		return;
+
+	// stirred like randomSampleParam, so the roll differs from boot to boot
+	pThis->uiRng.seed( pThis->uiRng.next() ^ pThis->frameClock );
+
+	int cur = ref.value[ kTargetSample ];
+	int v;
+	if ( cur >= lo && cur <= hi )
+	{
+		// uniform over the span values that are not the current one
+		v = lo + (int)( pThis->uiRng.next() % (uint32_t)span );
+		if ( v >= cur )
+			++v;
+	}
+	else
+		v = lo + (int)( pThis->uiRng.next() % (uint32_t)( span + 1 ) );
+
+	NT_setParameterFromUi( (uint32_t)ref.slot,
+		ref.param[ kTargetSample ], (int16_t)v );	// global index, see above
+}
+
+// the encoders' share of customUi, identical grammar on both decks: turn
+// browses the active target (pending, nothing loads), a quick push commits
+// the pending browse or rolls a random sample, and holding the push ~3/4s
+// swaps the encoder between Sample and Folder. The swap fires *at* the
+// threshold, under the finger -- the name line flips to the folder (or back)
+// while the button is still down, so the change is visible before anything
+// is released; the release after an acted hold then does nothing. A turn
+// during the hold also does nothing on release -- holding the encoder down
+// while dialling is natural, and without this it would randomise the sample
+// the moment you let go, undoing the selection just dialled in.
+static void encoderDeckUi( _breakSlicer* pThis, const _NT_uiData& data, uint16_t pressed )
+{
+	uint16_t released = data.lastButtons & ~data.controls;
+	static const uint16_t encButton[ kNumPlayers ] =
+		{ kNT_encoderButtonL, kNT_encoderButtonR };
+
+	// timed in audio frames: frameClock is the only clock the UI shares with
+	// the audio thread, and a read one buffer stale only stretches the hold
+	const uint32_t holdFrames = ( 3 * (uint32_t)NT_globals.sampleRate ) / 4;
+
+	bool players = ( pThis->perfDeck != 0 );
+
+	for ( int i=0; i<kNumPlayers; ++i )
+	{
+		// chimera deck: encoder R is idle when only one head is on
+		if ( !players && i == 1 && !pThis->v[ kParamLoops ] )
+			continue;
+
+		if ( data.encoders[ i ] )
+		{
+			if ( pThis->encHeld[ i ] )
+				pThis->encTurned[ i ] = true;
+			if ( players )
+				browsePlayer( pThis, i, data.encoders[ i ] );
+			else
+				browseHead( pThis, i, data.encoders[ i ] );
+		}
+
+		if ( pressed & encButton[ i ] )
+		{
+			pThis->encHeld[ i ] = true;
+			pThis->encTurned[ i ] = false;
+			pThis->encActed[ i ] = false;
+			pThis->encPushFrame[ i ] = pThis->frameClock;
+		}
+
+		if ( pThis->encHeld[ i ] && !pThis->encActed[ i ] && !pThis->encTurned[ i ]
+			&& ( data.controls & encButton[ i ] )
+			&& pThis->frameClock - pThis->encPushFrame[ i ] >= holdFrames )
+		{
+			// held long enough: sample <-> folder, visibly, mid-hold
+			pThis->encActed[ i ] = true;
+			if ( players )
+				pThis->playerTarget[ i ] ^= 1;
+			else
+				pThis->headTarget[ i ] ^= 1;
+		}
+
+		if ( ( released & encButton[ i ] ) && pThis->encHeld[ i ] )
+		{
+			pThis->encHeld[ i ] = false;
+			if ( pThis->encTurned[ i ] || pThis->encActed[ i ] )
+				continue;
+			if ( players )
+				pushPlayerEncoder( pThis, i );
+			else
+				pushSampleEncoder( pThis, i );
+		}
+	}
 }
 
 // editor controls tracked for the legend's "last used" highlight
@@ -3345,9 +3913,16 @@ enum
 uint32_t	hasCustomUi( _NT_algorithm* self )
 {
 	_breakSlicer* pThis = (_breakSlicer*)self;
-	// b1 held: tame/wild   b2 held: retrig   pot 3 push: re-roll the Mask
-	// encoders: browse each head's sample, push to load it
-	uint32_t mask = kNT_button1 | kNT_button2 | kNT_button3 | kNT_potButtonR
+	// b1 held: tame/wild   b2 held: retrig   b4: flip the players deck
+	// b3 quick: re-roll the Mask   b3 held: slice editor   pot 3: Blend
+	// encoders: browse the heads' samples -- or the players', per the deck.
+	// Pots 1/2 stay with the host, still aimed at the current page's
+	// parameters -- mind that the standard parameter line is suppressed
+	// (draw() returns true), so those edits happen without a readout.
+	// Pot 3's *push* is claimed but ignored: a hand riding Blend will click
+	// it by accident, and the host must not act on that either.
+	uint32_t mask = kNT_button1 | kNT_button2 | kNT_button3 | kNT_button4
+		| kNT_potR | kNT_potButtonR
 		| kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR;
 	if ( pThis->editMode )
 		mask |= kNT_button2 | kNT_button4 | kNT_encoderL | kNT_encoderR | kNT_encoderButtonL | kNT_encoderButtonR | kNT_potButtonL | kNT_potButtonC | kNT_potR;
@@ -3359,17 +3934,55 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 	_breakSlicer* pThis = (_breakSlicer*)self;
 
 	uint16_t pressed = data.controls & ~data.lastButtons;
+	uint16_t released = data.lastButtons & ~data.controls;
 
 	// button 1 held: Tame (dice off) or Wild (max compatible dice), per Hold mode
 	pThis->holdState = ( data.controls & kNT_button1 ) ? ( pThis->v[ kParamHoldMode ] ? 2 : 1 ) : 0;
 
+	// button 3: in the editor a press exits, as it always did. Outside it the
+	// press is decided like the encoder pushes -- a quick release re-rolls the
+	// Mask seed (the pot 3 push it replaces would misfire under a hand riding
+	// Blend on that same pot), and holding ~3/4s opens the slice editor, which
+	// earns its keep too rarely to own the quick press.
 	if ( pressed & kNT_button3 )
 	{
+		if ( pThis->editMode )
+		{
+			pThis->editMode = false;
+			pThis->b3Held = false;		// the release that follows does nothing
+		}
+		else
+		{
+			pThis->b3Held = true;
+			pThis->b3Consumed = false;
+			pThis->b3PressFrame = pThis->frameClock;
+		}
+	}
+
+	if ( pThis->b3Held && !pThis->b3Consumed && ( data.controls & kNT_button3 )
+		&& pThis->frameClock - pThis->b3PressFrame
+			>= ( 3 * (uint32_t)NT_globals.sampleRate ) / 4 )
+	{
+		// held long enough: open the editor under the finger, so the hold has
+		// visible feedback. Consumed either way -- a hold that finds nothing
+		// sliced must not re-roll the seed as a consolation prize on release.
+		pThis->b3Consumed = true;
 		Loop& L = pThis->loops[ pThis->editLoop ];
 		if ( L.sliced && L.numSlices >= 2 )
-			pThis->editMode = !pThis->editMode;
-		else
-			pThis->editMode = false;
+			pThis->editMode = true;
+	}
+
+	if ( released & kNT_button3 )
+	{
+		bool quick = pThis->b3Held && !pThis->b3Consumed;
+		pThis->b3Held = false;
+		// quick press: re-roll the Mask pattern. Only in Mask mode -- the seed
+		// does nothing in Chance or Xfade, so a press there would silently
+		// change a parameter with no audible result.
+		if ( quick && !pThis->editMode
+			&& pThis->v[ kParamLoops ]
+			&& pThis->v[ kParamBlendMode ] == kBlendMask )
+			rollMaskSeed( pThis );
 	}
 
 	// button 2 held (outside the editor): momentary retrigger of the current slice
@@ -3377,28 +3990,39 @@ void	customUi( _NT_algorithm* self, const _NT_uiData& data )
 
 	if ( !pThis->editMode )
 	{
-		// performance view: encoder L browses Lion's samples, encoder R
-		// browses Goat's (idle when only one head is on). Turning only moves
-		// the name on screen; the push loads it, or rolls a random sample
-		// when there is nothing pending.
-		if ( data.encoders[0] )
-			browseSampleParam( pThis, 0, data.encoders[0] );
-		if ( pressed & kNT_encoderButtonL )
-			pushSampleEncoder( pThis, 0 );
-		if ( pThis->v[ kParamLoops ] )
+		// button 4 flips the encoders between chimera's heads and the external
+		// players (the deck). Everything else on the page stays put.
+		if ( pressed & kNT_button4 )
 		{
-			if ( data.encoders[1] )
-				browseSampleParam( pThis, 1, data.encoders[1] );
-			if ( pressed & kNT_encoderButtonR )
-				pushSampleEncoder( pThis, 1 );
-
-			// pot 3 push re-rolls the Mask pattern. Only in Mask mode -- the
-			// seed does nothing in Chance or Xfade, so a press there would
-			// silently change a parameter with no audible result.
-			if ( ( pressed & kNT_potButtonR )
-				&& pThis->v[ kParamBlendMode ] == kBlendMask )
-				rollMaskSeed( pThis );
+			pThis->perfDeck ^= 1;
+			pThis->deckToast = ( 3 * (uint32_t)NT_globals.sampleRate ) / 4;
+			for ( int pi=0; pi<kNumPlayers; ++pi )
+				pThis->encHeld[ pi ] = false;	// a gesture must not straddle the flip
 		}
+
+		// both decks share one encoder grammar; the deck decides the targets
+		encoderDeckUi( pThis, data, pressed );
+
+		// pot 3 rides Blend at all times, whichever deck is up. Written only
+		// when the pot actually moved -- setupUi hands the host the current
+		// value for soft takeover on page entry, so an untouched pot never
+		// yanks the fader. Idle with one head: Blend does nothing there and
+		// the pot should not silently rewrite it.
+		if ( ( data.controls & kNT_potR ) && pThis->v[ kParamLoops ] )
+		{
+			int algIdx = NT_algorithmIndex( pThis );
+			if ( algIdx >= 0 )
+			{
+				int b = (int)( data.pots[2] * 100.0f + 0.5f );
+				if ( b < 0 ) b = 0;
+				if ( b > 100 ) b = 100;
+				NT_setParameterFromUi( algIdx, kParamBlend + NT_parameterOffset(), (int16_t)b );
+				// the host's parameter line is suppressed, so this toast is
+				// the pot's numeric feedback while it moves
+				pThis->blendToast = (uint32_t)NT_globals.sampleRate / 2;
+			}
+		}
+
 		return;
 	}
 
@@ -3492,7 +4116,10 @@ void	setupUi( _NT_algorithm* self, _NT_float3& pots )
 	_breakSlicer* pThis = (_breakSlicer*)self;
 	pots[0] = 0.5f;
 	pots[1] = 0.5f;
-	pots[2] = pThis->zoomPot;
+	// pot 3 means zoom in the editor and Blend everywhere else; report
+	// whichever it currently is, so the host's soft takeover lines up
+	pots[2] = pThis->editMode ? pThis->zoomPot
+		: pThis->v[ kParamBlend ] / 100.0f;
 }
 
 // format a 1-based slice label with musical position, e.g. "S5 b2.1"
@@ -3908,29 +4535,138 @@ static void drawOutlinedText( int x, int y, const char* str, int colour, _NT_tex
 	NT_drawText( x, y, str, colour, align, kNT_textTiny );
 }
 
-// the head's WAV file name, drawn in the performance view so the encoder can
-// browse samples without opening the Lion/Goat page. A pending browse position
-// is marked with '>' and drawn bright, to read as "push to load this"; the
-// loaded name sits dim.
+// the head's line in the performance view, so the encoder can browse without
+// opening the Lion/Goat page. Same grammar as the players: a pending browse
+// is marked with '>' and drawn bright ("push to load this"), the loaded state
+// sits dim, and on the Folder target the line names the folder and its file
+// count behind a '/' instead.
 static void drawSampleName( _breakSlicer* pThis, int li, int y )
 {
-	_NT_wavInfo info;
-	NT_getSampleFileInfo( pThis->v[ loopFolderParam[li] ], shownSample( pThis, li ), info );
-	if ( !info.name )
-		return;
+	char buf[ 64 ];
+	const int cap = sizeof(buf);
 
-	if ( pThis->browseSample[li] < 0 )
+	bool pending = ( pThis->browseSample[li] >= 0 ) || ( pThis->browseFolder[li] >= 0 );
+	int folder = ( pThis->browseFolder[li] >= 0 )
+		? pThis->browseFolder[li] : pThis->v[ loopFolderParam[li] ];
+
+	int n = pending ? appendStr( buf, 0, "> ", cap ) : 0;
+	buf[n] = 0;
+
+	if ( pThis->headTarget[li] == kTargetFolder )
 	{
-		drawOutlinedText( 2, y, info.name, 10, kNT_textLeft );
+		_NT_wavFolderInfo fi = { NULL, 0 };
+		NT_getSampleFolderInfo( (uint32_t)folder, fi );
+
+		n = appendStr( buf, n, "/", cap );	// marks the folder target
+		if ( fi.name )
+		{
+			n = appendStr( buf, n, fi.name, cap );
+			if ( n < cap - 14 )
+			{
+				buf[n++] = ' ';
+				buf[n++] = '(';
+				n += NT_intToString( buf + n, (int)fi.numSampleFiles );
+				buf[n++] = ')';
+				buf[n] = 0;
+			}
+		}
+		else
+		{
+			buf[n++] = 'F';
+			n += NT_intToString( buf + n, folder );
+		}
+	}
+	else
+	{
+		_NT_wavInfo info;
+		info.name = NULL;
+		NT_getSampleFileInfo( (uint32_t)folder, (uint32_t)shownSample( pThis, li ), info );
+		if ( info.name )
+			n = appendStr( buf, n, info.name, cap );
+		else if ( pending )
+		{
+			// an unresolvable pending index still deserves feedback
+			buf[n++] = 'S';
+			n += NT_intToString( buf + n, shownSample( pThis, li ) );
+		}
+		else
+			return;		// nothing loaded, nothing pending: no line
+	}
+
+	drawOutlinedText( 2, y, buf, pending ? 15 : 10, kNT_textLeft );
+}
+
+// one player's line, drawn in place of the head's sample name while the
+// players deck is up. Same grammar as drawSampleName: bright with a '>'
+// while a browse is pending ("push to load this"), dim otherwise. On the
+// Folder target the line names the folder and its file count instead.
+static void drawPlayerLine( _breakSlicer* pThis, int pi, int y )
+{
+	char buf[ 64 ];
+	const int cap = sizeof(buf);
+	int n = appendStr( buf, 0, kPlayerTags[ pi ], cap );
+
+	PlayerRef ref;
+	if ( !resolvePlayer( pi, ref ) )
+	{
+		// no such slot in the preset: say so rather than draw a dead line
+		n = appendStr( buf, n, ": none", cap );
+		drawOutlinedText( 2, y, buf, 8, kNT_textLeft );
 		return;
 	}
 
-	char buf[ 48 ];
-	buf[0] = '>';
-	buf[1] = ' ';
-	strncpy( buf + 2, info.name, sizeof(buf) - 3 );
-	buf[ sizeof(buf) - 1 ] = 0;
-	drawOutlinedText( 2, y, buf, 15, kNT_textLeft );
+	bool pending = ( pThis->playerBrowse[ pi ][ 0 ] >= 0 )
+		|| ( pThis->playerBrowse[ pi ][ 1 ] >= 0 );
+	n = appendStr( buf, n, pending ? "> " : " ", cap );
+
+	int folderVal = shownPlayerValue( pThis, ref, pi, kTargetFolder );
+	int folderCat = playerCatalogue( ref, kTargetFolder, folderVal );
+
+	if ( pThis->playerTarget[ pi ] == kTargetFolder )
+	{
+		_NT_wavFolderInfo fi = { NULL, 0 };
+		if ( folderCat >= 0 )
+			NT_getSampleFolderInfo( (uint32_t)folderCat, fi );
+
+		n = appendStr( buf, n, "/", cap );	// marks the folder target
+		if ( fi.name )
+		{
+			n = appendStr( buf, n, fi.name, cap );
+			if ( n < cap - 14 )
+			{
+				buf[n++] = ' ';
+				buf[n++] = '(';
+				n += NT_intToString( buf + n, (int)fi.numSampleFiles );
+				buf[n++] = ')';
+				buf[n] = 0;
+			}
+		}
+		else
+		{
+			buf[n++] = 'F';
+			n += NT_intToString( buf + n, folderVal );
+		}
+	}
+	else
+	{
+		int sampleVal = shownPlayerValue( pThis, ref, pi, kTargetSample );
+		int sampleCat = playerCatalogue( ref, kTargetSample, sampleVal );
+
+		_NT_wavInfo info;
+		info.name = NULL;
+		if ( folderCat >= 0 && sampleCat >= 0 )
+			NT_getSampleFileInfo( (uint32_t)folderCat, (uint32_t)sampleCat, info );
+
+		if ( info.name )
+			n = appendStr( buf, n, info.name, cap );
+		else
+		{
+			buf[n++] = 'S';
+			n += NT_intToString( buf + n, sampleVal );
+		}
+	}
+
+	drawOutlinedText( 2, y, buf, pending ? 15 : 10, kNT_textLeft );
 }
 
 bool	draw( _NT_algorithm* self )
@@ -3955,13 +4691,23 @@ bool	draw( _NT_algorithm* self )
 		drawStrip( pThis, 1, 40, 62, pThis->xfB );
 		drawOutlinedText( 128, 26, "LION", 12, kNT_textCentre );
 		drawOutlinedText( 128, 51, "GOAT", 12, kNT_textCentre );
-		drawSampleName( pThis, 0, 26 );
-		drawSampleName( pThis, 1, 51 );
+	}
+	else
+		drawStrip( pThis, 0, 18, 62, 1.0f );
+
+	// the name lines follow the deck: the heads' samples, or the players'.
+	// The players draw both lines even with one loop -- they are preset
+	// residents, not chimera's, so the loop count does not gate them.
+	if ( pThis->perfDeck )
+	{
+		drawPlayerLine( pThis, 0, 26 );
+		drawPlayerLine( pThis, 1, 51 );
 	}
 	else
 	{
-		drawStrip( pThis, 0, 18, 62, 1.0f );
 		drawSampleName( pThis, 0, 26 );
+		if ( twoLoops )
+			drawSampleName( pThis, 1, 51 );
 	}
 
 	bool analysing = ( pThis->loops[0].loaded && !pThis->loops[0].analysed )
@@ -3975,14 +4721,27 @@ bool	draw( _NT_algorithm* self )
 	else if ( analysing && pThis->v[ kParamSliceMode ] )
 		NT_drawText( 254, 30, "analysing", 8, kNT_textRight, kNT_textTiny );
 
-	// brief confirmation after a pot-3 re-roll: the pattern is audible but the
-	// seed is not, and it is worth knowing which one you have landed on
+	// one centred toast line, by rarity: the seed (audible but invisible)
+	// beats the deck flip, which beats the Blend readout -- the pot's only
+	// numeric feedback now that the host's parameter line is suppressed
 	if ( pThis->seedToast )
 	{
 		char buf[24];
 		int n = 0;
 		buf[n++] = 's'; buf[n++] = 'e'; buf[n++] = 'e'; buf[n++] = 'd'; buf[n++] = ' ';
 		n += NT_intToString( buf + n, pThis->v[ kParamMaskSeed ] );
+		buf[n] = 0;
+		drawOutlinedText( 128, 10, buf, 15, kNT_textCentre );
+	}
+	else if ( pThis->deckToast )
+		drawOutlinedText( 128, 10, pThis->perfDeck ? "> players" : "> chimera",
+			15, kNT_textCentre );
+	else if ( pThis->blendToast )
+	{
+		char buf[24];
+		int n = appendStr( buf, 0, "blend ", sizeof(buf) );
+		n += NT_intToString( buf + n, pThis->v[ kParamBlend ] );
+		buf[n++] = '%';
 		buf[n] = 0;
 		drawOutlinedText( 128, 10, buf, 15, kNT_textCentre );
 	}
@@ -4002,7 +4761,10 @@ bool	draw( _NT_algorithm* self )
 		NT_drawText( 0, 12, buf, 8, kNT_textLeft, kNT_textTiny );
 	}
 
-	return false;
+	// true: suppress the host's standard parameter line, which sat over the
+	// top of the strips and the name lines. The Blend toast above stands in
+	// for the one readout it was still providing.
+	return true;
 }
 
 // ---------------------------------------------------------------------------
